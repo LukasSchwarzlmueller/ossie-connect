@@ -1,0 +1,66 @@
+[project]
+name = "ossie-connect"
+version = "0.1.0"
+description = "Upload and download Apache Ossie semantic models to Microsoft Fabric and Databricks"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = [
+    # Nothing here has run against a real workspace yet - see "Status" in the README.
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Topic :: Database",
+]
+# The apache-ossie converters are not on PyPI, so they are named here as PEP 508 direct
+# references rather than only in [tool.uv.sources]. Sources are project-local and do not
+# travel with the built wheel, which makes the package uninstallable for anyone else -
+# including a models repo depending on this by git URL. Direct references do travel.
+# They also mean this package cannot be uploaded to PyPI until the converters are.
+dependencies = [
+    "apache-ossie-microsoft @ git+https://github.com/apache/ossie@a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c#subdirectory=converters/microsoft",
+    "apache-ossie-databricks @ git+https://github.com/apache/ossie@a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c#subdirectory=converters/databricks",
+    "databricks-sdk>=0.133.0",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# Snowflake is optional: its connector is heavy and the Snowflake path is upload-only.
+snowflake = [
+    "apache-ossie-snowflake @ git+https://github.com/apache/ossie@a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c#subdirectory=converters/snowflake",
+    "snowflake-connector-python>=4.7.2",
+]
+
+[project.scripts]
+ossie-connect = "ossie_connect.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# Required for the git direct references in [project.dependencies] above.
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ossie_connect"]
+# py.typed ships the inline annotations, so a consumer type-checking against
+# SupportsUpload / SupportsDownload actually sees them.
+artifacts = ["src/ossie_connect/py.typed"]
+
+[tool.uv.sources]
+# Pinned, not floating. Two reasons it cannot simply be bumped:
+#  - converters/databricks has since split into java/ and python/ subdirectories, so on
+#    main the subdirectory below is `converters/databricks/python`. Upstream calls the
+#    Java one "the maintained implementation" and the Python one "to be deprecated";
+#    when that matters, implement the two methods of _converters.DatabricksConverter
+#    against the Java CLI and pass it as Databricks(converter=...).
+#  - _fabric_api reuses three private helpers of ossie_microsoft.engine, which a bump
+#    could rename. tests/test_ossie_connect.py exercises all three.
+apache-ossie = { git = "https://github.com/apache/ossie", subdirectory = "python", rev = "a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
+apache-ossie-microsoft = { git = "https://github.com/apache/ossie", subdirectory = "converters/microsoft", rev = "a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
+apache-ossie-databricks = { git = "https://github.com/apache/ossie", subdirectory = "converters/databricks", rev = "a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
+apache-ossie-snowflake = { git = "https://github.com/apache/ossie", subdirectory = "converters/snowflake", rev = "a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
+
+[dependency-groups]
+dev = ["pytest>=8"]

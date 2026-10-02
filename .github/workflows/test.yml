@@ -1,0 +1,16 @@
+name: test
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra snowflake
+      - run: uv run pytest -q
+      # The wheel must install without [tool.uv.sources], which does not travel with it.
+      - run: uv build
+      - run: uv venv --clear /tmp/consumer && uv pip install --python /tmp/consumer/bin/python dist/*.whl
+      - run: /tmp/consumer/bin/ossie-connect --version

@@ -1,0 +1,132 @@
+version: 0.2.0.dev0
+name: sales_demo
+description: Minimal orders/customers demo model for the OSI meetup talk
+datasets:
+- name: customers
+  source: customers
+  primary_key:
+  - customer_id
+  description: One row per customer
+  fields:
+  - name: customer_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: customer_id
+    datatype: Integer
+  - name: customer_name
+    expression:
+      dialects:
+        - dialect: ANSI_SQL
+          expression: "UPPER(customer_name)"
+        - dialect: SNOWFLAKE
+          expression: "INITCAP(customer_name)"
+        - dialect: DATABRICKS
+          expression: "LOWER(customers.customer_name)"
+        - dialect: DAX
+          expression: "UPPER(customers[customer_name])"
+    label: Customer Name
+    datatype: String
+  - name: customer_segment
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: customer_segment
+    label: Customer Segment
+    datatype: String
+    dimension:
+      is_time: false
+    ai_context:
+      instructions: Splits customers into Enterprise and SMB. Sales commissions and the CEO's board deck are both based on this.
+- name: orders
+  source: orders
+  primary_key:
+  - order_id
+  description: One row per order, references customers via customer_id
+  fields:
+  - name: order_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: order_id
+    datatype: Integer
+  - name: customer_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: customer_id
+    datatype: Integer
+  - name: order_date
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: order_date
+    label: Order Date
+    datatype: Date
+    dimension:
+      is_time: true
+  - name: order_amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: order_amount
+    label: Order Amount
+    datatype: Decimal
+    ai_context:
+      synonyms:
+      - amount
+      - order total
+      - order value
+relationships:
+- name: orders_to_customers
+  from: orders
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - customer_id
+metrics:
+- name: total_revenue
+  expression:
+    dialects:
+    - dialect: ANSI_SQL
+      expression: SUM(order_amount)
+    - dialect: DAX
+      expression: "SUM(orders[order_amount])"
+  description: Total revenue across all orders
+  datatype: Decimal
+  ai_context:
+    synonyms:
+    - revenue
+    - sales
+  custom_extensions:
+  - vendor_name: POWER_BI
+    data: '{"table": "orders"}'
+- name: order_count
+  expression:
+    dialects:
+    - dialect: ANSI_SQL
+      expression: COUNT(*)
+    - dialect: DAX
+      expression: "COUNTROWS(orders)"
+  description: Number of orders
+  datatype: Integer
+  custom_extensions:
+  - vendor_name: POWER_BI
+    data: '{"table": "orders"}'
+- name: avg_order_value
+  expression:
+    dialects:
+    - dialect: ANSI_SQL
+      expression: AVG(order_amount)
+  description: Average order value
+  datatype: Decimal
+  ai_context:
+    synonyms:
+    - AOV
+    - average order value
+    - average purchase value
+    instructions: This is the number the CEO checks every Monday.
+  custom_extensions:
+  - vendor_name: POWER_BI
+    data: '{"table": "orders"}'

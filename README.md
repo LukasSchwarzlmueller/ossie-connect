@@ -1,0 +1,358 @@
+# ossie-connect
+
+Deploy [Apache Ossie](https://ossie.apache.org/) semantic models to Microsoft Fabric,
+Databricks and Snowflake — and turn semantic models that already exist in Fabric or
+Databricks into Ossie files.
+
+The [apache-ossie converters](https://github.com/apache/ossie/tree/main/converters) already
+translate between Ossie and each platform's own format, but they are deliberately offline -
+`ossie-microsoft` describes itself as "pure offline transforms; no Power BI connection
+needed". This package adds the part they leave out: authenticating, creating or updating the
+object in a live workspace, and fetching it back.
+
+```bash
+pip install ossie-connect                # Fabric + Databricks
+pip install "ossie-connect[snowflake]"   # adds Snowflake
+```
+
+## Python
+
+Define a connection once, then move files across it.
+
+```python
+from ossie_connect import Fabric, Databricks
+
+fabric = Fabric(workspace="8f1c…", lakehouse="2b40…")
+fabric.upload("model.yaml")                      # -> Fabric item id
+fabric.download("sales_demo", "model.yaml")      # -> Ossie YAML
+
+dbx = Databricks(catalog="main", schema="sales", warehouse_id="a1b2…")
+dbx.upload("model.yaml")                         # -> main.sales.sales_demo
+dbx.download("sales_demo", "model.yaml")
+
+snow = Snowflake(database="OSSIE_DEMO", schema="PUBLIC")
+snow.upload("model.yaml")                        # -> OSSIE_DEMO.PUBLIC.sales_demo
+```
+
+**Snowflake is upload-only.** `apache-ossie-snowflake` converts Ossie to Snowflake's
+Semantic View format but ships nothing going the other way, so `Snowflake` has no
+`download` at all rather than one that raises. The protocols reflect that: `Fabric` and
+`Databricks` are `Connection`, `Snowflake` is only `SupportsUpload`.
+
+`upload` takes a path or the YAML itself. `download` returns the YAML and writes it only if
+you pass a second argument. Both are idempotent: uploading twice updates the existing object
+rather than creating a second one.
+
+### Configuration is optional
+
+`from_env()` is a convenience, not the way in. Every connection takes its settings
+directly, so a script can hold them itself, read them from your own config, or compute
+them:
+
+```python
+Databricks(catalog="main", schema="sales", warehouse_id="a1b2…")
+Fabric(workspace="8f1c…", lakehouse="2b40…")
+Snowflake(database="OSSIE_DEMO", schema="PUBLIC",
+          account="…", user="…", password="…")
+```
+
+`from_env()` reads the variables in the table below, and takes overrides:
+`Databricks.from_env(schema="marketing")`. `load_env()` loads a `.env` file first if you
+want one. None of it is required.
+
+### Deploying to whatever is configured
+
+`configured_connections()` returns the platforms this environment has settings for,
+leaving out the ones it does not. Each connection carries its own `platform` name:
+
+```python
+load_env()
+for connection in configured_connections():
+    print(connection.platform, connection.upload("model.yaml"))
+```
+
+The same script then works on a machine set up for one platform and a machine set up
+for three. It reports what is *configured*, not what will authenticate - checking that
+would mean acquiring a token from each - so an upload can still fail. It takes the same
+overrides as `from_env()`, so `configured_connections(schema="staging")` re-points
+everything it found.
+
+### Several targets in one script
+
+`at()` re-points a connection, sharing the authenticated client rather than building a
+second one:
+
+```python
+dbx = Databricks.from_env()
+
+dbx.upload(models["sales_demo"])                       # main.sales
+dbx.at(schema="marketing").upload(models["campaigns"]) # main.marketing
+dbx.at(catalog="prod", schema="sales").upload(models["sales_demo"])
+
+for schema in ("dev", "staging", "prod"):              # one login, three deploys
+    dbx.at(schema=schema).upload(models["sales_demo"])
+```
+
+The original is never mutated - `at()` returns a new connection. It exists on all three
+platforms: `Fabric.at(workspace=…, lakehouse=…)` shares the token, so several targets
+cost one `az` call, and `Snowflake.at(database=…, schema=…)` shares the open session.
+
+### Does it need to run in parallel?
+
+Measured against real accounts, one upload costs roughly a second once connected -
+Databricks 1.2s, Snowflake 0.8s. A handful of models across three platforms is a few
+seconds, so sequential is fine and simpler.
+
+If you reach a few dozen models and want concurrency, write it yourself - uploads are
+network-bound, so threads are enough, and the pieces you need are already safe:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+dbx = Databricks.from_env()
+with ThreadPoolExecutor(max_workers=8) as pool:
+    pool.map(lambda m: dbx.upload(m), models.values())
+```
+
+Lazy credential setup is locked, so connections sharing a client through `at()` acquire
+one token and build one client however many threads use them. Uploads are idempotent,
+so a retry after a partial failure is safe.
+
+### A folder of models
+
+`Models` maps a directory of Ossie files by the name *inside* each file, which is not
+necessarily the filename:
+
+```python
+from ossie_connect import Models
+
+models = Models("models/")
+list(models)                            # ['finance_demo', 'marketing_demo', 'sales_demo']
+fabric.upload(models["sales_demo"])     # values are paths, which upload takes
+
+for name, path in models.items():       # deploy a subset
+    if name.startswith("sales_"):
+        fabric.upload(path)
+```
+
+It is an ordinary `Mapping`, so `in`, `len()`, `.keys()` and `.items()` all work. Files
+that are not Ossie models are ignored; two files declaring the same model name is an
+error rather than a silent last-one-wins.
+
+Warnings from a conversion - a dropped field, a placeholder used - are for whoever runs
+the script, but Python prints them with a file path and a source echo. One call fixes
+the format for the whole program:
+
+```python
+from ossie_connect import plain_warnings
+
+plain_warnings()
+# warning: Databricks ossi.test: dropped join-key field(s) ... customers.customer_id
+```
+
+Warnings name the connection that raised them. They go to stderr while your own output
+goes to stdout, so the two interleave unpredictably - especially through a pipe, where
+stdout is buffered and stderr is not. Ordering cannot be relied on, so each line says
+for itself which platform and target it came from. `connection.platform` and
+`connection.target` are the same two values, if you want them in your own output.
+
+It is opt-in rather than done on import, because warning formatting belongs to the
+program, not to a library it happens to use. To attribute warnings to a particular step
+instead, collect them with `warnings.catch_warnings(record=True)` and filter on
+`warning.filename` - `ossie-models/example.py` does that.
+
+Converting without uploading:
+
+```python
+fabric.to_tmsl("model.yaml")              # the model.bim that would be sent
+dbx.create_statement("model.yaml")        # the CREATE VIEW that would be run
+```
+
+## Command line
+
+```bash
+ossie-connect upload   fabric     model.yaml
+ossie-connect upload   fabric     models/              # every model in the folder
+ossie-connect download fabric     sales_demo -o model.yaml
+ossie-connect upload   databricks model.yaml --dry-run
+ossie-connect download databricks sales_demo          # to stdout
+```
+
+Given a folder, `upload` sends every Ossie model in it, named by what is inside each
+file. One failure does not stop the rest - uploads are idempotent, so seeing every
+problem at once and re-running beats one failure per run. The exit code is non-zero if
+any model failed. Selecting a *subset* is deliberately not a flag; that is what the
+`Models` mapping above is for.
+
+Settings come from the environment and a `.env` file in the working directory; every one has
+a flag that overrides it. Add `--warnings` to see what a conversion could not carry across.
+
+## Configuration
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `FABRIC_WORKSPACE_ID` | Fabric | workspace to work in |
+| `FABRIC_LAKEHOUSE_ID` | Fabric | lakehouse item id; see Direct Lake below |
+| `FABRIC_LAKEHOUSE_WORKSPACE_ID` | Fabric | only if the lakehouse is in another workspace |
+| `FABRIC_SCHEMA` | Fabric | default `dbo` |
+| `FABRIC_TOKEN` | Fabric | overrides the Azure CLI |
+| `DATABRICKS_CATALOG` / `DATABRICKS_SCHEMA` | Databricks | where the Metric View is created |
+| `DATABRICKS_WAREHOUSE_ID` | Databricks | SQL warehouse; needed to upload, not to download |
+| `DATABRICKS_HOST` / `DATABRICKS_TOKEN` | Databricks | read by the Databricks SDK itself |
+| `SNOWFLAKE_DATABASE` / `SNOWFLAKE_SCHEMA` | Snowflake | where the Semantic View is created |
+| `SNOWFLAKE_ACCOUNT` / `SNOWFLAKE_USER` / `SNOWFLAKE_PASSWORD` | Snowflake | account auth |
+| `SNOWFLAKE_ROLE` | Snowflake | optional; falls back to your default role |
+| `SNOWFLAKE_WAREHOUSE` | Snowflake | optional; default `OSSIE_COMPUTE_WH`, created if missing |
+
+Fabric authenticates with the Azure CLI by default - run `az login` and no secret needs
+storing. Databricks uses the SDK's own resolution: environment variables or a profile in
+`~/.databrickscfg`.
+
+## What happens on each platform
+
+|  | Fabric | Databricks | Snowflake |
+|---|---|---|---|
+| becomes | a semantic model item | a Metric View | a native Semantic View |
+| upload | `POST /items`, then `updateDefinition` | `CREATE OR REPLACE VIEW … WITH METRICS` | `SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML` |
+| download | `getDefinition?format=TMSL` | `view_definition`, else `SHOW CREATE TABLE` | **not possible** |
+| round trip | lossy, see below | lossless | n/a |
+| compute needed | no | to upload only | creates its own warehouse |
+
+Fabric transfers use TMSL rather than TMDL, because TMSL is a single `model.bim` part: no
+.NET assemblies and no `tom` extra are involved on either leg.
+
+### Direct Lake, and why the lakehouse id matters
+
+Fabric uploads produce Direct Lake partitions. The lakehouse is identified by the OneLake URL
+built from `lakehouse=` (its *item id*), not by any name. Leave it out and the converter
+writes a zero-GUID placeholder: the model uploads, but it cannot refresh. The lakehouse must
+already contain the tables the model names, under `schema`.
+
+### Source qualification
+
+Platforms disagree on how many parts a table name has - Fabric keeps schema and table, Unity
+Catalog wants catalog, schema and table. A model that names its tables bare is qualified with
+the connection's own prefix on the way out, so one file works against both:
+
+```yaml
+datasets:
+  - name: orders
+    source: orders        # -> dbo.orders on Fabric, main.sales.orders on Databricks
+```
+
+A model that already qualifies its sources is left alone.
+
+## One file, both platforms
+
+Fabric and Unity Catalog make opposite demands of the same join column, and a model
+written for one fails on the other:
+
+- A **Fabric relationship needs the key present as a field on both datasets.** Remove it
+  and the relationship is dropped silently - the model uploads with no join at all.
+- A **Metric View flattens every dataset into one namespace and refuses duplicate
+  dimension names**, so `orders.customer_id` and `customers.customer_id` collide and the
+  conversion fails outright.
+
+`ossie-connect` reconciles this on the Databricks path rather than making you keep two
+copies of the model: on the `to` side of a relationship it drops the key field and keeps
+it in `primary_key`, so the join still resolves and the fact-side column is untouched.
+Every removal is reported as a warning. Pass `dedupe_join_keys=False` to see the
+converter's own error instead.
+
+Write the model the way Fabric needs it - key present on both sides - and both platforms
+work from that one file.
+
+### Other things to know before writing a model
+
+- **Databricks and Snowflake pin the Ossie version.** Both converters accept only
+  `version: 0.2.0.dev0`.
+- **Snowflake needs a `datatype` on every field.** It is silently omitted otherwise and
+  only surfaces as a validation failure when the view is created.
+- **Snowflake requires metrics nested under one table.** The converter emits a
+  top-level `metrics:` list, which Snowflake rejects with "Unsupported expression in the
+  definition of derived metric". `ossie-connect` nests each metric under the table whose
+  columns its expression references, falling back to the fact table for expressions like
+  `COUNT(*)` that name no column. Pass `nest_metrics=False` to see the raw converter
+  output.
+- **Qualify SQL expressions on joined tables.** A `DATABRICKS`-dialect expression like
+  `LOWER(customer_name)` on a joined dataset is passed through unrewritten and Databricks
+  rejects it with `UNRESOLVED_COLUMN`. Write `LOWER(customers.customer_name)`. The
+  converter warns for any non-trivial expression, qualified or not.
+
+## What a round trip preserves
+
+**Databricks is lossless in one direction only.** Metric View → Ossie → Metric View
+composes byte-for-byte: anything a Metric View has that Ossie has no field for is
+stashed in `custom_extensions[DATABRICKS]` and restored.
+
+Ossie → Metric View → Ossie is *not* lossless, because a Metric View's YAML carries no
+model name of its own. `download` passes the view's name to the converter, which
+otherwise names the model after its source table - but the converter ties the fact
+dataset's name to the model name, so that dataset comes back relabelled:
+
+```yaml
+# uploaded                        # downloaded again
+name: sales_demo                  name: sales_demo
+datasets:                         datasets:
+  - name: orders            ->      - name: sales_demo     # relabelled
+      source: main.sales.orders         source: main.sales.orders   # unchanged
+  - name: customers                 - name: customers
+```
+
+Only the label moves; `source` is intact, so re-uploading still targets the right
+table. The alternative is worse: without the name, the *model* comes back as `orders`
+and re-uploading it creates a second view under that name.
+
+What the forward conversion changes:
+
+- `dimension.is_time` is dropped - Metric Views have no equivalent flag.
+- `primary_key` / `unique_keys` become `rely.at_most_one_match` on the join, not lost.
+- **Dataset-level `description` is dropped** - a Metric View has only one top-level
+  `comment`, filled from the model description. This is a real loss.
+
+**Fabric is lossier**, and worth knowing before you rely on a round trip:
+
+- **`label` on a field is dropped** - a semantic model has nowhere to record a display
+  name distinct from the column name.
+- **`datatype` on a metric is dropped** - Power BI infers a measure's type from its DAX.
+- **Only one dialect survives per expression.** A field carrying `ANSI_SQL`, `SNOWFLAKE`,
+  `DATABRICKS` and `DAX` comes back with whichever one Fabric stored.
+- **SQL-only metrics are translated.** Fabric generates DAX for a metric that has none and
+  keeps the original SQL in `OssieExpression` annotations, which return inside
+  `custom_extensions` rather than as an `ANSI_SQL` dialect.
+- **Relationships are renamed** to their column-derived form; the original name survives
+  in `custom_extensions`.
+- **Everything else unmapped lands in `custom_extensions`** rather than being dropped,
+  which is why a second round trip changes much less than the first.
+
+Pass `warn=True` (or `--warnings`) and every one of these is reported as it happens.
+
+## Status
+
+Early. 23 tests cover the conversion paths, request shapes and response handling by
+replaying recorded API responses, so everything but the network is exercised. The live
+calls against real workspaces are **not yet verified end to end** - treat `upload` as the
+riskier half, since it writes.
+
+`SHOW CREATE TABLE` is the Metric View read-back route known to work in practice;
+`tables.get().view_definition` is tried first only because it needs no warehouse, and
+falls through if it returns anything that is not a YAML body.
+
+## Dependencies, and a change coming
+
+The converters are pinned to one upstream commit rather than tracked. Two things make a
+bump non-trivial:
+
+- **Upstream now maintains the Databricks converter in Java.** `converters/databricks`
+  has split into `java/` and `python/`; the Java one is "the maintained implementation"
+  and the Python one this package uses is "to be deprecated". The path change alone
+  breaks the pin. Conversion is kept behind `_converters.DatabricksConverter`, so moving
+  to the Java CLI means implementing its two methods and passing
+  `Databricks(converter=...)` - the connection does not change.
+- **`_fabric_api` reuses three private helpers of `ossie_microsoft.engine`** for the
+  HTTP layer, documented at the top of that module. A bump could rename them; the tests
+  exercise all three.
+
+## Licence
+
+Apache 2.0.
