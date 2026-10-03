@@ -34,6 +34,10 @@ class SupportsUpload(Protocol):
         """Remove what `upload` created. Returns whether there was anything to remove."""
         ...
 
+    def list_models(self) -> list[str]:
+        """The names of the models deployed where this connection points."""
+        ...
+
     def check(self) -> list:
         """Verify the settings describe something real. Writes nothing.
 

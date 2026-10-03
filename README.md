@@ -121,7 +121,8 @@ with ThreadPoolExecutor(max_workers=8) as pool:
 
 Lazy credential setup is locked, so connections sharing a client through `at()` acquire
 one token and build one client however many threads use them. Uploads are idempotent,
-so a retry after a partial failure is safe.
+so a retry after a partial failure is safe. Fabric requests retry themselves on 429 and
+5xx, honouring `Retry-After` - throttling is a wait, not a failure.
 
 ### A folder of models
 
@@ -177,15 +178,18 @@ dbx.create_statement("model.yaml")        # the CREATE VIEW that would be run
 
 ```bash
 ossie-connect check    fabric                  # settings right? writes nothing
+ossie-connect list     fabric                  # what is deployed there
 ossie-connect upload   fabric     model.yaml
+ossie-connect delete   fabric     sales_demo
 ossie-connect upload   fabric     models/              # every model in the folder
 ossie-connect download fabric     sales_demo -o model.yaml
 ossie-connect upload   databricks model.yaml --dry-run
 ossie-connect download databricks sales_demo          # to stdout
 ```
 
-`check` verifies the settings describe something real and writes nothing, exiting
-non-zero on an error. It is the only command that contacts the platform without
+`list` names what is deployed, and `delete` removes one. `check` verifies the settings
+describe something real and writes nothing, exiting
+non-zero on an error. `check` is the only command that contacts the platform without
 creating anything - `--dry-run` proves the conversion but talks to nobody, so it cannot
 catch a wrong lakehouse, an expired token or a missing schema. `connection.check()` is
 the same thing from Python, returning findings rather than printing them.

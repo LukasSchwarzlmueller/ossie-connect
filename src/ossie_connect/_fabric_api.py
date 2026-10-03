@@ -12,11 +12,42 @@ import json
 import os
 import shutil
 import subprocess
+import time
 
 from ossie_microsoft.engine import FABRIC_API, FABRIC_SCOPE
-from ossie_microsoft.engine import _request as request
+from ossie_microsoft.engine import _request as _send
 from ossie_microsoft.engine import _request_failure as request_failure
 from ossie_microsoft.engine import _wait_for_operation as wait_for_operation
+
+
+_TRANSIENT = frozenset({408, 425, 429, 500, 502, 503, 504})
+_RETRIES = 4
+
+
+def request(method, url, token, payload=None):
+    """Send a request, retrying the failures that are worth retrying.
+
+    Fabric answers 429 with a Retry-After when it throttles, and 5xx transiently. Both
+    were previously hard failures: a deploy that needed to wait two seconds instead
+    stopped. The header is honoured when present, otherwise the wait doubles.
+    """
+    delay = 1.0
+    for attempt in range(_RETRIES):
+        status, body, headers = _send(method, url, token, payload)
+        if status is not None and status not in _TRANSIENT:
+            return status, body, headers
+        if attempt == _RETRIES - 1:
+            return status, body, headers
+        wait = delay
+        after = (headers or {}).get("Retry-After")
+        if after:
+            try:
+                wait = min(float(after), 60.0)
+            except (TypeError, ValueError):
+                pass
+        time.sleep(wait)
+        delay *= 2
+    raise AssertionError("unreachable")
 
 
 class FabricError(RuntimeError):
@@ -44,6 +75,25 @@ def acquire_token() -> str:
             f"`az login` needed - {exc.stderr.strip().splitlines()[-1] if exc.stderr.strip() else 'az returned no token'}"
         ) from exc
     return result.stdout.strip()
+
+
+def token_expiry(token):
+    """Seconds until the token expires, or None if it cannot be read.
+
+    A pasted token is a snapshot: it was valid when copied and may not be now. Reading
+    the claim turns a mid-run 401 - which can strand a half-created item - into
+    something sayable beforehand.
+    """
+    parts = token.split(".")
+    if len(parts) != 3 or not token.startswith("eyJ"):
+        return None
+    try:
+        claims = json.loads(
+            base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        )
+        return int(claims["exp"] - time.time())
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def encode_part(value) -> str:
@@ -188,6 +238,17 @@ class FabricApi:
 
     def delete_item(self, workspace, item, token):
         return _delete_item(workspace, item, token)
+
+    def list_models(self, workspace, token):
+        url = f"{FABRIC_API}/workspaces/{workspace}/semanticModels"
+        names = []
+        while url:
+            status, body, _ = request("GET", url, token)
+            if status != 200:
+                raise FabricError(f"listing failed: {request_failure(status, body)}")
+            names += [i["displayName"] for i in (body or {}).get("value", [])]
+            url = (body or {}).get("continuationUri")
+        return names
 
     def list_items(self, workspace, token, kind=None):
         suffix = f"?type={kind}" if kind else ""

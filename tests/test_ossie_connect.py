@@ -1095,3 +1095,115 @@ def test_cli_check_exits_zero_when_there_is_nothing_wrong(capsys, monkeypatch):
     monkeypatch.setattr("ossie_connect.fabric.Fabric.check", lambda self: [])
     code, out, _ = _run(["check", "fabric"], capsys)
     assert code == 0 and "ready" in out
+
+
+# --- retrying what is worth retrying ---------------------------------------------
+
+def test_a_throttled_request_is_retried(monkeypatch):
+    """429 was a hard failure; Fabric means 'wait', not 'give up'."""
+    from ossie_connect import _fabric_api
+
+    answers = [(429, {"m": "slow down"}, {"Retry-After": "0"}),
+               (200, {"value": []}, {})]
+    monkeypatch.setattr(_fabric_api, "_send", lambda *a, **k: answers.pop(0))
+    monkeypatch.setattr(_fabric_api.time, "sleep", lambda _s: None)
+    status, _body, _ = _fabric_api.request("GET", "https://x", "t")
+    assert status == 200 and answers == []
+
+
+def test_retry_honours_retry_after(monkeypatch):
+    from ossie_connect import _fabric_api
+
+    waited = []
+    answers = [(503, None, {"Retry-After": "7"}), (200, {}, {})]
+    monkeypatch.setattr(_fabric_api, "_send", lambda *a, **k: answers.pop(0))
+    monkeypatch.setattr(_fabric_api.time, "sleep", waited.append)
+    _fabric_api.request("GET", "https://x", "t")
+    assert waited == [7.0]
+
+
+def test_a_real_error_is_not_retried(monkeypatch):
+    from ossie_connect import _fabric_api
+
+    calls = []
+    monkeypatch.setattr(_fabric_api, "_send",
+                        lambda *a, **k: (calls.append(1), (403, {"m": "no"}, {}))[1])
+    assert _fabric_api.request("GET", "https://x", "t")[0] == 403
+    assert len(calls) == 1, "403 means no, not later"
+
+
+def test_retrying_gives_up_eventually(monkeypatch):
+    from ossie_connect import _fabric_api
+
+    monkeypatch.setattr(_fabric_api, "_send", lambda *a, **k: (429, None, {}))
+    monkeypatch.setattr(_fabric_api.time, "sleep", lambda _s: None)
+    assert _fabric_api.request("GET", "https://x", "t")[0] == 429
+
+
+# --- token expiry ----------------------------------------------------------------
+
+def _token(seconds_left):
+    import base64
+    import time as _t
+
+    claims = base64.urlsafe_b64encode(
+        json.dumps({"exp": int(_t.time()) + seconds_left}).encode()
+    ).decode().rstrip("=")
+    return f"eyJ0eXAiOiJKV1QifQ.{claims}.sig"
+
+
+def test_token_expiry_is_read_from_the_claim():
+    from ossie_connect._fabric_api import token_expiry
+
+    assert 3500 < token_expiry(_token(3600)) <= 3600
+    assert token_expiry("not-a-token") is None
+
+
+def test_check_refuses_an_expired_token(fabric_api):
+    from ossie_connect import Fabric
+
+    connection = Fabric(workspace=WORKSPACE, token=_token(-10), api=fabric_api)
+    assert "expired" in connection.check()[0].message
+
+
+def test_check_warns_about_a_token_about_to_expire(fabric_api):
+    from ossie_connect import Fabric
+
+    connection = Fabric(workspace=WORKSPACE, lakehouse=LAKEHOUSE, token=_token(120),
+                        api=fabric_api)
+    findings = connection.check()
+    assert [f.level for f in findings] == ["warning"]
+    # Not an exact duration: a second passes between minting the token and reading it.
+    assert "the token expires in" in findings[0].message
+
+
+# --- listing ---------------------------------------------------------------------
+
+def test_fabric_lists_what_is_deployed(fabric, fabric_api):
+    assert fabric.list_models() == []
+    fabric.upload(MODEL, name="one")
+    fabric.upload(MODEL, name="two")
+    assert fabric.list_models() == ["one", "two"]
+
+
+def test_cli_list_prints_each_name(model_folder, capsys, monkeypatch):
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", WORKSPACE)
+    monkeypatch.setattr("ossie_connect.fabric.Fabric.list_models", lambda self: ["a", "b"])
+    code, out, _ = _run(["list", "fabric"], capsys)
+    assert code == 0 and out.split() == ["a", "b"]
+
+
+def test_cli_delete_removes_and_says_so(capsys, monkeypatch):
+    removed = []
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", WORKSPACE)
+    monkeypatch.setattr("ossie_connect.fabric.Fabric.delete",
+                        lambda self, name, **k: removed.append(name) or True)
+    code, out, _ = _run(["delete", "fabric", "sales_demo"], capsys)
+    assert code == 0 and removed == ["sales_demo"] and "Deleted sales_demo" in out
+
+
+def test_cli_delete_reports_nothing_to_remove(capsys, monkeypatch):
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", WORKSPACE)
+    monkeypatch.setattr("ossie_connect.fabric.Fabric.delete", lambda self, name, **k: False)
+    assert _run(["delete", "fabric", "absent"], capsys)[0] == 1
+    assert _run(["delete", "fabric", "absent", "--missing-ok"], capsys)[0] == 0

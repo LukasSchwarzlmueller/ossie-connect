@@ -22,6 +22,10 @@ class FakeFabricApi:
     lakehouses = [{"id": "22222222-2222-2222-2222-222222222222",
                    "displayName": "raw", "type": "Lakehouse"}]
 
+    def list_models(self, workspace, token):
+        self.calls.append(("list_models",))
+        return sorted(self.items)
+
     def list_items(self, workspace, token, kind=None):
         self.calls.append(("list_items", kind))
         if workspace != WORKSPACE:

@@ -1,7 +1,9 @@
 """Command line wrapper around the Fabric and Databricks connections.
 
     ossie-connect check    fabric
+    ossie-connect list     fabric
     ossie-connect upload   fabric     model.yaml
+    ossie-connect delete   fabric     sales_demo
     ossie-connect download fabric     sales_demo -o model.yaml
     ossie-connect upload   databricks model.yaml
     ossie-connect download databricks sales_demo -o model.yaml
@@ -46,6 +48,13 @@ def _build_parser():
     up.add_argument(
         "--dry-run", action="store_true", help="print what would be sent, connect to nothing"
     )
+
+    sub.add_parser("list", parents=[common], help="what is deployed where this points")
+
+    rm = sub.add_parser("delete", parents=[common], help="remove a deployed model")
+    rm.add_argument("name", help="name of the model to remove")
+    rm.add_argument("--missing-ok", action="store_true",
+                    help="exit 0 if there was nothing to remove")
 
     sub.add_parser(
         "check", parents=[common],
@@ -138,6 +147,21 @@ def main(argv=None) -> int:
     plain_warnings()
     try:
         connection = _connect(args)
+
+        if args.command == "list":
+            names = connection.list_models()
+            for name in names:
+                print(name)
+            if not names:
+                print(f"nothing deployed in {connection.target}", file=sys.stderr)
+            return 0
+
+        if args.command == "delete":
+            if connection.delete(args.name, missing_ok=args.missing_ok):
+                print(f"Deleted {args.name} from {connection.target}")
+                return 0
+            print(f"no {args.name} in {connection.target}", file=sys.stderr)
+            return 0 if args.missing_ok else 1
 
         if args.command == "check":
             findings = connection.check()

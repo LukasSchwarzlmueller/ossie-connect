@@ -183,6 +183,13 @@ class Snowflake:
         cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {self.database}.{self.schema}")
         self._prepared = True
 
+    def list_models(self) -> list[str]:
+        """The names of the Semantic Views in this database and schema."""
+        cursor = self.connection.cursor()
+        cursor.execute(f"SHOW SEMANTIC VIEWS IN SCHEMA {self.database}.{self.schema}")
+        # SHOW puts the object's name in the second column, after created_on.
+        return [row[1] for row in cursor.fetchall() or []]
+
     def delete(self, name: str, *, missing_ok: bool = True) -> bool:
         """Drop a Semantic View. Returns whether there was one to drop."""
         full_name = name if name.count(".") == 2 else f"{self.database}.{self.schema}.{name}"

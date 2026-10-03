@@ -7,7 +7,7 @@ import warnings
 
 from ._convert import OssieConnectWarning
 from ._converters import FabricConverter
-from ._fabric_api import FabricApi, FabricError
+from ._fabric_api import FabricApi, FabricError, token_expiry
 from ._io import read_model, write_model
 from ._model import qualify_sources
 from .preflight import Finding, PreflightError
@@ -113,6 +113,16 @@ class Fabric:
         except FabricError as exc:
             return [Finding("error", str(exc))]
 
+        left = token_expiry(token)
+        if left is not None and left <= 0:
+            return [Finding("error", "the token has expired - fetch a new one")]
+        if left is not None and left < 300:
+            findings.append(Finding(
+                "warning",
+                f"the token expires in {left // 60} min {left % 60} s; a long run may "
+                "fail partway and leave something behind",
+            ))
+
         status, body, _ = self._api.list_items(self.workspace, token, kind="Lakehouse")
         if status != 200:
             return [Finding(
@@ -192,6 +202,10 @@ class Fabric:
         document = json.loads(model_bim)
         document.setdefault("name", name)
         return write_model(self._converter.to_ossie(document, warn=warn), out)
+
+    def list_models(self) -> list[str]:
+        """The names of the semantic models in this workspace."""
+        return self._api.list_models(self.workspace, self.token)
 
     def delete(self, name: str, *, item: str | None = None, missing_ok: bool = True) -> bool:
         """Remove a semantic model. Returns whether there was one to remove.

@@ -137,6 +137,14 @@ class Databricks:
         )
         return write_model(ossie_yaml, out)
 
+    def list_models(self) -> list[str]:
+        """The names of the Metric Views in this catalog and schema."""
+        views = self.client.tables.list(catalog_name=self.catalog, schema_name=self.schema)
+        return [
+            t.name for t in views
+            if str(getattr(t, "table_type", "")).endswith("METRIC_VIEW")
+        ]
+
     def delete(self, name: str, *, missing_ok: bool = True) -> bool:
         """Drop a Metric View. Returns whether there was one to drop."""
         full_name = name if name.count(".") == 2 else f"{self.catalog}.{self.schema}.{name}"
