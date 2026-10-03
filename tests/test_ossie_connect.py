@@ -910,3 +910,27 @@ def test_our_warnings_have_a_category_of_their_own(databricks):
         warnings.simplefilter("error", UserWarning)   # anything else would raise
         warnings.simplefilter("ignore", OssieConnectWarning)
         databricks.to_metric_view(MODEL)
+
+
+def test_databricks_reads_through_show_create_table_when_it_can():
+    """`view_definition` returns a normalized form with synonyms and comments stripped
+    - 646 characters against 1149 for the same view on a real workspace - so it is a
+    fallback, not the default."""
+    client = FakeDatabricksClient()
+    connection = Databricks(catalog="main", schema="sales", warehouse_id="w",
+                            client=client)
+    connection.upload(MODEL)
+    client.statements.clear()
+    connection.download("sales_demo")
+    assert any(s.startswith("SHOW CREATE TABLE") for s in client.statements)
+
+
+def test_databricks_without_a_warehouse_warns_that_the_read_is_lossy():
+    from ossie_connect import OssieConnectWarning
+
+    client = FakeDatabricksClient()
+    Databricks(catalog="main", schema="sales", warehouse_id="w",
+               client=client).upload(MODEL)
+    reader = Databricks(catalog="main", schema="sales", client=client)
+    with pytest.warns(OssieConnectWarning, match="synonyms and comments are dropped"):
+        reader.download("sales_demo")

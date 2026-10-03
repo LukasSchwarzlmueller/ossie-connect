@@ -215,7 +215,7 @@ storing. Databricks uses the SDK's own resolution: environment variables or a pr
 | becomes | a semantic model item | a Metric View | a native Semantic View |
 | upload | `POST /items`, then `updateDefinition` | `CREATE OR REPLACE VIEW … WITH METRICS` | `SYSTEM$CREATE_SEMANTIC_VIEW_FROM_YAML` |
 | download | `getDefinition?format=TMSL` | `view_definition`, else `SHOW CREATE TABLE` | **not possible** |
-| round trip | lossy, see below | lossless | n/a |
+| round trip | lossy, see below | partial, see below | n/a |
 | compute needed | no | to upload only | creates its own warehouse |
 
 Fabric transfers use TMSL rather than TMDL, because TMSL is a single `model.bim` part: no
@@ -281,34 +281,36 @@ work from that one file.
 
 ## What a round trip preserves
 
-**Databricks is lossless in one direction only.** Metric View → Ossie → Metric View
-composes byte-for-byte: anything a Metric View has that Ossie has no field for is
-stashed in `custom_extensions[DATABRICKS]` and restored.
+**Databricks round-trips what a Metric View can hold, and no more.** Metric View →
+Ossie → Metric View is byte-for-byte lossless; anything a Metric View has that Ossie
+lacks a field for is stashed in `custom_extensions[DATABRICKS]` and restored.
 
-Ossie → Metric View → Ossie is *not* lossless, because a Metric View's YAML carries no
-model name of its own. `download` passes the view's name to the converter, which
-otherwise names the model after its source table - but the converter ties the fact
-dataset's name to the model name, so that dataset comes back relabelled:
+Ossie → Metric View → Ossie is a different question, because an Ossie model carries
+more than a Metric View can express. Measured against a real workspace, what survives:
 
-```yaml
-# uploaded                        # downloaded again
-name: sales_demo                  name: sales_demo
-datasets:                         datasets:
-  - name: orders            ->      - name: sales_demo     # relabelled
-      source: main.sales.orders         source: main.sales.orders   # unchanged
-  - name: customers                 - name: customers
-```
+| | survives |
+|---|---|
+| metrics, their descriptions and synonyms | yes |
+| field synonyms (`ai_context`) | yes |
+| the `DATABRICKS` dialect expression | yes |
+| relationships, as joins | yes |
+| `datatype`, `label`, `dimension.is_time` | **no** |
+| `ANSI_SQL`, `DAX`, `SNOWFLAKE` dialects | **no** - a Metric View holds one expression |
+| dataset-level `description` | **no** - only one top-level comment exists |
 
-Only the label moves; `source` is intact, so re-uploading still targets the right
-table. The alternative is worse: without the name, the *model* comes back as `orders`
-and re-uploading it creates a second view under that name.
+Only `is_time`, the dataset descriptions and the join-key change are reported; the rest
+goes quietly. `warn=True` shows what is reported.
 
-What the forward conversion changes:
+Two structural changes are worth expecting. The fact dataset is renamed after the model,
+since a Metric View's YAML carries no model name of its own - `source` is untouched, so
+re-uploading still targets the right table. And joined columns come back on the fact
+dataset rather than the one they were defined on, because a Metric View flattens every
+dataset into one namespace.
 
-- `dimension.is_time` is dropped - Metric Views have no equivalent flag.
-- `primary_key` / `unique_keys` become `rely.at_most_one_match` on the join, not lost.
-- **Dataset-level `description` is dropped** - a Metric View has only one top-level
-  `comment`, filled from the model description. This is a real loss.
+**Reading without a warehouse is lossier still.** `tables.get().view_definition` returns
+a normalized form with `synonyms` and `comment` stripped - 646 characters against 1149
+for the same view. `download` therefore prefers `SHOW CREATE TABLE`, and warns when it
+has no warehouse to run it on.
 
 **Fabric is lossier**, and worth knowing before you rely on a round trip:
 
@@ -334,9 +336,9 @@ replaying recorded API responses, so everything but the network is exercised. Th
 calls against real workspaces are **not yet verified end to end** - treat `upload` as the
 riskier half, since it writes.
 
-`SHOW CREATE TABLE` is the Metric View read-back route known to work in practice;
-`tables.get().view_definition` is tried first only because it needs no warehouse, and
-falls through if it returns anything that is not a YAML body.
+`SHOW CREATE TABLE` is the Metric View read-back route, verified live.
+`tables.get().view_definition` is a fallback for when there is no warehouse, and is
+lossy - it strips synonyms and comments - so `download` warns when it uses it.
 
 ## Dependencies, and a change coming
 

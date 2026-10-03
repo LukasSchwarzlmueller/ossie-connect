@@ -173,26 +173,38 @@ class Databricks:
     def _read_definition(self, full_name: str) -> str:
         """The Metric View's YAML body, from Unity Catalog.
 
-        SHOW CREATE TABLE is the route known to work - it is how a Metric View's stored
-        YAML is inspected in practice (SHOW CREATE *VIEW* is not valid Databricks SQL and
-        fails with PARSE_SYNTAX_ERROR). It needs a warehouse, though, so `tables.get` is
-        tried first because it needs none. Anything that does not come back as a YAML
-        body falls through to the statement.
+        SHOW CREATE TABLE is preferred because it is the only *complete* answer. The
+        `view_definition` column returns a normalized form with `synonyms` and
+        `comment` stripped - measured against a real workspace, 646 characters against
+        1149 for the same view - so reading it loses exactly the metadata an Ossie
+        model cares most about. It is used only when there is no warehouse to run a
+        statement on, and says what that costs.
         """
+        if self.warehouse_id:
+            result = self._execute(f"SHOW CREATE TABLE {full_name}")
+            rows = (result.result.data_array or []) if result.result else []
+            if not rows or not rows[0]:
+                raise DatabricksError(f"SHOW CREATE TABLE returned nothing for {full_name}")
+            definition = _yaml_body(rows[0][0])
+            if definition is None:
+                raise DatabricksError(
+                    f"{full_name} does not look like a Metric View - no YAML body found "
+                    "in its definition"
+                )
+            return definition
+
+        warnings.warn(
+            f"{self.platform} {self.target}: reading {full_name} without a warehouse; "
+            "synonyms and comments are dropped by that path. Set warehouse_id to keep "
+            "them",
+            OssieConnectWarning,
+            stacklevel=3,
+        )
         try:
             table = self.client.tables.get(full_name)
         except Exception as exc:  # the SDK raises its own NotFound/PermissionDenied types
             raise DatabricksError(f"could not read {full_name}: {exc}") from exc
-
         definition = _yaml_body(getattr(table, "view_definition", None))
-        if definition is not None:
-            return definition
-
-        result = self._execute(f"SHOW CREATE TABLE {full_name}")
-        rows = (result.result.data_array or []) if result.result else []
-        if not rows or not rows[0]:
-            raise DatabricksError(f"SHOW CREATE TABLE returned nothing for {full_name}")
-        definition = _yaml_body(rows[0][0])
         if definition is None:
             raise DatabricksError(
                 f"{full_name} does not look like a Metric View - no YAML body found in "
