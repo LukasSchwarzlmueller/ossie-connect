@@ -343,14 +343,26 @@ Pass `warn=True` (or `--warnings`) and every one of these is reported as it happ
 
 ## Status
 
-Early. 23 tests cover the conversion paths, request shapes and response handling by
-replaying recorded API responses, so everything but the network is exercised. The live
-calls against real workspaces are **not yet verified end to end** - treat `upload` as the
-riskier half, since it writes.
+| | upload | download | verified against a real platform |
+|---|---|---|---|
+| Databricks | yes | yes | **yes** - deploys, and the Metric View returns the right numbers |
+| Snowflake | yes | not possible | **yes** - deploys, and the Semantic View returns the same numbers |
+| Fabric | yes | yes | **yes** - deploys, stores what was sent, and its DAX compiles and evaluates |
 
-`SHOW CREATE TABLE` is the Metric View read-back route, verified live.
-`tables.get().view_definition` is a fallback for when there is no warehouse, and is
-lossy - it strips synonyms and comments - so `download` warns when it uses it.
+133 tests run against in-memory fakes, covering conversion, request shapes,
+long-running operations, preflight and the CLI. A separate repository runs the live
+tests: it seeds tables on Databricks and Snowflake and asserts the deployed semantic
+layer computes the expected figures, and on Fabric it reads the deployed TMSL back and
+checks the measures, relationships and partitions are the ones it sent.
+
+On Fabric the model is also published, refreshed - which is what compiles the DAX - and
+every measure evaluated, through upstream's `validate_with_engine`. That covers the
+measures this package's converter generates from SQL, such as `AVERAGE('orders'
+[order_amount])` for a metric with no DAX of its own.
+
+Not yet verified: a Fabric model reading **real rows**. Evaluating measures uses inline
+sample data, so the figures are not the demo figures; asserting those needs a lakehouse
+holding the tables, which Databricks and Snowflake both cover instead.
 
 ## Dependencies, and a change coming
 
