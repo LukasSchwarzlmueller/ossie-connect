@@ -10,6 +10,7 @@ import logging
 import os
 import subprocess
 import sys
+import warnings
 
 import pytest
 import yaml
@@ -824,4 +825,88 @@ def test_every_connection_says_where_it_points(name, expected, request):
 def test_the_join_key_warning_names_the_platform_that_raised_it(databricks):
     """It lands on stderr among other platforms' output; unattributed it is noise."""
     with pytest.warns(UserWarning, match=r"^Databricks main\.sales: dropped customers\.customer_id"):
+        databricks.to_metric_view(MODEL)
+
+
+# --- Reporter --------------------------------------------------------------------
+
+def _reporter(**kwargs):
+    import io
+
+    from ossie_connect import Reporter
+
+    out = io.StringIO()
+    return Reporter(stream=out, colour=kwargs.pop("colour", False), **kwargs), out
+
+
+def test_reporter_marks_each_outcome():
+    report, out = _reporter()
+    report.ok("Databricks", "main.sales.sales_demo")
+    report.fail("Fabric", "no credential")
+    report.warn("dropped a field")
+    assert out.getvalue().splitlines() == [
+        "  ✓ Databricks  main.sales.sales_demo",
+        "  ✗ Fabric      no credential",
+        "    ⚠ dropped a field",
+    ]
+
+
+def test_reporter_wraps_against_the_visible_prefix_with_colour_on():
+    """Colouring before wrapping makes textwrap count the escape codes."""
+    import re
+
+    plain, plain_out = _reporter(width=50)
+    coloured, coloured_out = _reporter(width=50, colour=True)
+    message = "a rather long message that will certainly have to wrap somewhere"
+    plain.ok("Databricks", message)
+    coloured.ok("Databricks", message)
+    stripped = re.sub(r"\033\[[0-9;]*m", "", coloured_out.getvalue())
+    assert stripped == plain_out.getvalue()
+
+
+def test_reporter_colour_is_off_for_a_non_terminal():
+    import io
+
+    from ossie_connect import Reporter
+
+    assert Reporter(stream=io.StringIO()).colour is False
+
+
+def test_reporter_capture_puts_warnings_under_their_step(databricks):
+    report, out = _reporter()
+    with report.capture():
+        report.ok(databricks.platform, databricks.upload(MODEL))
+    lines = out.getvalue().splitlines()
+    assert lines[0].startswith("  ✓ Databricks")
+    assert lines[1].startswith("    ⚠ Databricks main.sales: dropped customers.customer_id")
+
+
+def test_reporter_capture_strips_the_connections_own_prefix(databricks):
+    report, out = _reporter()
+    with report.capture(databricks):
+        report.ok(databricks.platform, databricks.upload(MODEL))
+    assert out.getvalue().splitlines()[1] == (
+        "    ⚠ dropped customers.customer_id (duplicate dimension; still in primary_key)"
+    )
+
+
+def test_reporter_capture_ignores_other_libraries_warnings():
+    report, out = _reporter()
+    with report.capture():
+        warnings.warn("something unrelated deprecated", DeprecationWarning)
+        report.ok("Databricks", "done")
+    assert "deprecated" not in out.getvalue()
+
+
+def test_our_warnings_have_a_category_of_their_own(databricks):
+    """So callers can filter on them, and Reporter need not match on a file path."""
+    from ossie_connect import OssieConnectWarning
+
+    with pytest.warns(OssieConnectWarning):
+        databricks.to_metric_view(MODEL)
+
+    with warnings.catch_warnings():
+        # simplefilter inserts at the front, so the ignore must come second to win.
+        warnings.simplefilter("error", UserWarning)   # anything else would raise
+        warnings.simplefilter("ignore", OssieConnectWarning)
         databricks.to_metric_view(MODEL)

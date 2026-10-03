@@ -5,6 +5,7 @@ import re
 import threading
 import warnings
 
+from ._convert import OssieConnectWarning
 from ._converters import DatabricksConverter
 from ._io import read_model, write_model
 from ._model import drop_duplicate_join_keys, model_name, qualify_sources
@@ -151,6 +152,7 @@ class Databricks:
                 warnings.warn(
                     f"{self.platform} {self.target}: dropped {', '.join(removed)} "
                     "(duplicate dimension; still in primary_key)",
+                    OssieConnectWarning,
                     stacklevel=2,
                 )
         return self._converter.to_platform(ossie_yaml, warn=warn)

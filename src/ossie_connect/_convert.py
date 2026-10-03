@@ -7,6 +7,15 @@ from contextlib import contextmanager
 CONVERTER_LOGGERS = ("ossie_microsoft", "ossie_databricks")
 
 
+class OssieConnectWarning(UserWarning):
+    """Something this package changed or could not carry across.
+
+    A category of its own so callers can filter on it - `warnings.simplefilter("ignore",
+    OssieConnectWarning)` - and so `Reporter` can tell our warnings from those of every
+    other library in the process, which matching on a file path cannot do reliably.
+    """
+
+
 @contextmanager
 def converting(warn: bool):
     """Run a conversion with its reporting on exactly one channel.

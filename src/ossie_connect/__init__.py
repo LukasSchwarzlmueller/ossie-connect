@@ -13,8 +13,9 @@ updating the remote object, and fetching it back.
 
 from ._fabric_api import FabricError
 from ._io import Yaml
-from .console import plain_warnings
+from .console import Reporter, plain_warnings
 from .discover import configured_connections
+from ._convert import OssieConnectWarning
 from .connection import Connection, SupportsDownload, SupportsUpload
 from .databricks import Databricks, DatabricksError
 from .env import load_env
@@ -24,6 +25,8 @@ from .snowflake import Snowflake, SnowflakeError
 
 __all__ = [
     "Connection",
+    "OssieConnectWarning",
+    "Reporter",
     "configured_connections",
     "Databricks",
     "DatabricksError",
