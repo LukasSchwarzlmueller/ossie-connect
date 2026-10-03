@@ -16,6 +16,7 @@ from ._io import Yaml
 from .console import Reporter, plain_warnings
 from .discover import configured_connections
 from ._convert import OssieConnectWarning
+from ._converters import ConversionError
 from .connection import Connection, SupportsDownload, SupportsUpload
 from .databricks import Databricks, DatabricksError
 from .env import load_env
@@ -25,6 +26,7 @@ from .preflight import Finding, PreflightError
 from .snowflake import Snowflake, SnowflakeError
 
 __all__ = [
+    "ConversionError",
     "Connection",
     "OssieConnectWarning",
     "Reporter",

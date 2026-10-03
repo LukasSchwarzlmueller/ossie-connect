@@ -184,7 +184,7 @@ def test_the_same_model_converts_for_both_platforms(fabric, databricks):
 
 
 def test_dedupe_can_be_turned_off_to_see_the_converters_own_error(databricks):
-    from ossie_databricks._common import ConversionError
+    from ossie_connect import ConversionError
 
     with pytest.raises(ConversionError, match="collides"):
         databricks.to_metric_view(MODEL, dedupe_join_keys=False)
@@ -1207,3 +1207,30 @@ def test_cli_delete_reports_nothing_to_remove(capsys, monkeypatch):
     monkeypatch.setattr("ossie_connect.fabric.Fabric.delete", lambda self, name, **k: False)
     assert _run(["delete", "fabric", "absent"], capsys)[0] == 1
     assert _run(["delete", "fabric", "absent", "--missing-ok"], capsys)[0] == 0
+
+
+# --- what a newcomer sees when the model is wrong --------------------------------
+
+def test_a_refused_model_is_an_error_not_a_traceback(tmp_path, capsys):
+    """Each converter raises its own type, straight off Exception. Unwrapped, a model
+    with the wrong `version` reached the user as a stack trace."""
+    model = tmp_path / "m.yaml"
+    model.write_text("version: 0.1.1\nname: m\ndatasets:\n- name: o\n  source: o\n"
+                     "  fields:\n  - name: x\n")
+    code, _out, err = _run(
+        ["upload", "databricks", str(model), "--catalog", "c", "--schema", "s",
+         "--dry-run"], capsys)
+    assert code == 1
+    assert err.startswith("Error: Databricks: Unsupported Apache Ossie version '0.1.1'")
+
+
+def test_conversion_errors_are_one_catchable_type(tmp_path):
+    """So a caller need not import three private modules to handle them."""
+    from ossie_connect import ConversionError, Databricks, Snowflake, Yaml
+
+    bad = Yaml("version: 0.1.1\nname: m\ndatasets:\n- name: o\n  source: o\n"
+               "  fields:\n  - name: x\n")
+    for connection in (Databricks(catalog="c", schema="s"),
+                       Snowflake(database="d", schema="s")):
+        with pytest.raises(ConversionError, match="0.1.1"):
+            connection.preview(bad)

@@ -8,7 +8,29 @@ deprecated". When that lands, a Java-backed class implementing the same two meth
 drops in via `Databricks(converter=...)`.
 """
 
+from contextlib import contextmanager
+
 from ._convert import converting
+
+
+class ConversionError(RuntimeError):
+    """A converter refused the model.
+
+    Each converter raises its own type, all deriving straight from Exception, so a
+    caller would have to import three private modules to catch them. They are
+    re-raised as this, which the CLI already handles - otherwise a model with, say,
+    the wrong `version` reaches the user as a traceback rather than a sentence.
+    """
+
+
+@contextmanager
+def _as_conversion_error(platform):
+    try:
+        yield
+    except RuntimeError:
+        raise
+    except Exception as exc:                     # noqa: BLE001 - three unrelated types
+        raise ConversionError(f"{platform}: {exc}") from exc
 
 
 class FabricConverter:
@@ -17,13 +39,13 @@ class FabricConverter:
     def to_platform(self, ossie_yaml: str, *, source=None, warn: bool = False) -> dict:
         from ossie_microsoft.ossie_to_semantic_model import convert_ossie_to_semantic_model
 
-        with converting(warn):
+        with _as_conversion_error("Fabric"), converting(warn):
             return convert_ossie_to_semantic_model(ossie_yaml, source=source)
 
     def to_ossie(self, model_bim: str, *, warn: bool = False) -> str:
         from ossie_microsoft.semantic_model_to_ossie import convert_semantic_model_to_ossie
 
-        with converting(warn):
+        with _as_conversion_error("Fabric"), converting(warn):
             return convert_semantic_model_to_ossie(model_bim)
 
 
@@ -33,7 +55,7 @@ class DatabricksConverter:
     def to_platform(self, ossie_yaml: str, *, warn: bool = False) -> str:
         from ossie_databricks.ossie_to_metric_view import convert_ossie_to_metric_view
 
-        with converting(warn):
+        with _as_conversion_error("Databricks"), converting(warn):
             return convert_ossie_to_metric_view(ossie_yaml)
 
     def to_ossie(self, metric_view: str, *, name: str | None = None,
@@ -42,7 +64,7 @@ class DatabricksConverter:
         without one the converter names the model after the source table."""
         from ossie_databricks.metric_view_to_ossie import convert_metric_view_to_ossie
 
-        with converting(warn):
+        with _as_conversion_error("Databricks"), converting(warn):
             return convert_metric_view_to_ossie(metric_view, model_name=name)
 
 
@@ -56,5 +78,5 @@ class SnowflakeConverter:
     def to_platform(self, ossie_yaml: str, *, warn: bool = False) -> str:
         from ossie_snowflake.converter import convert_ossie_to_snowflake
 
-        with converting(warn):
+        with _as_conversion_error("Snowflake"), converting(warn):
             return convert_ossie_to_snowflake(ossie_yaml)
