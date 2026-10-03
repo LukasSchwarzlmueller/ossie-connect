@@ -34,6 +34,14 @@ class SupportsUpload(Protocol):
         """Remove what `upload` created. Returns whether there was anything to remove."""
         ...
 
+    def check(self) -> list:
+        """Verify the settings describe something real. Writes nothing.
+
+        Returns `preflight.Finding`s - empty when all is well. An "error" means an
+        upload would fail; a "warning" means it would work but not as intended.
+        """
+        ...
+
 
 @runtime_checkable
 class SupportsDownload(Protocol):

@@ -1072,3 +1072,19 @@ def test_preflight_can_be_skipped(fabric_api):
                         token="t", api=fabric_api)
     assert connection.upload(plain, check=False)
     assert not any(c[0] == "list_items" for c in fabric_api.calls)
+
+
+def test_cli_check_writes_nothing_and_reports_ready(model_folder, capsys, monkeypatch):
+    monkeypatch.setenv("DATABRICKS_CATALOG", "main")
+    monkeypatch.setenv("DATABRICKS_SCHEMA", "sales")
+    code, out, err = _run(["check", "databricks"], capsys)
+    # No client is configured here, so the schema lookup fails - which is the point:
+    # check reports it instead of discovering it mid-upload.
+    assert code == 1 and "cannot be read" in err
+
+
+def test_cli_check_exits_zero_when_there_is_nothing_wrong(capsys, monkeypatch):
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", WORKSPACE)
+    monkeypatch.setattr("ossie_connect.fabric.Fabric.check", lambda self: [])
+    code, out, _ = _run(["check", "fabric"], capsys)
+    assert code == 0 and "ready" in out

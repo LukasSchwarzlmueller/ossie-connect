@@ -21,6 +21,7 @@ from .databricks import Databricks, DatabricksError
 from .env import load_env
 from .fabric import Fabric
 from .models import Models
+from .preflight import Finding, PreflightError
 from .snowflake import Snowflake, SnowflakeError
 
 __all__ = [
@@ -32,7 +33,9 @@ __all__ = [
     "DatabricksError",
     "Fabric",
     "FabricError",
+    "Finding",
     "Models",
+    "PreflightError",
     "Snowflake",
     "SnowflakeError",
     "SupportsDownload",

@@ -9,6 +9,7 @@ from ._convert import OssieConnectWarning
 from ._converters import DatabricksConverter
 from ._io import read_model, write_model
 from ._model import drop_duplicate_join_keys, model_name, qualify_sources
+from .preflight import Finding
 
 
 class DatabricksError(RuntimeError):
@@ -97,6 +98,24 @@ class Databricks:
 
                 self._client = WorkspaceClient()  # auth from env / ~/.databrickscfg
             return self._client
+
+    def check(self) -> list[Finding]:
+        """Verify the catalog and schema exist, without changing anything."""
+        findings = []
+        if not self.warehouse_id:
+            findings.append(Finding(
+                "warning",
+                "no warehouse_id: downloading works, uploading needs a SQL warehouse",
+            ))
+        try:
+            self.client.schemas.get(f"{self.catalog}.{self.schema}")
+        except Exception as exc:  # the SDK raises NotFound/PermissionDenied of its own
+            findings.append(Finding(
+                "error",
+                f"{self.catalog}.{self.schema} cannot be read - uploading creates tables "
+                f"inside it but will not create it: {str(exc)[:160]}",
+            ))
+        return findings
 
     def upload(self, model, *, name: str | None = None, warn: bool = False) -> str:
         """Upload an Ossie model as a Metric View. Returns its fully qualified name.

@@ -176,12 +176,19 @@ dbx.create_statement("model.yaml")        # the CREATE VIEW that would be run
 ## Command line
 
 ```bash
+ossie-connect check    fabric                  # settings right? writes nothing
 ossie-connect upload   fabric     model.yaml
 ossie-connect upload   fabric     models/              # every model in the folder
 ossie-connect download fabric     sales_demo -o model.yaml
 ossie-connect upload   databricks model.yaml --dry-run
 ossie-connect download databricks sales_demo          # to stdout
 ```
+
+`check` verifies the settings describe something real and writes nothing, exiting
+non-zero on an error. It is the only command that contacts the platform without
+creating anything - `--dry-run` proves the conversion but talks to nobody, so it cannot
+catch a wrong lakehouse, an expired token or a missing schema. `connection.check()` is
+the same thing from Python, returning findings rather than printing them.
 
 Given a folder, `upload` sends every Ossie model in it, named by what is inside each
 file. One failure does not stop the rest - uploads are idempotent, so seeing every

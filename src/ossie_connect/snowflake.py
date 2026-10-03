@@ -14,6 +14,7 @@ import yaml
 from ._converters import SnowflakeConverter
 from ._io import read_model
 from ._model import model_name, qualify_sources
+from .preflight import Finding
 
 # An identifier followed by "(" is a function call, not a column reference. Matching on
 # that rather than a keyword list matters: a column genuinely named `date`, `count` or
@@ -126,6 +127,29 @@ class Snowflake:
                 password=self.password, role=self.role,
             )
         return self._connection
+
+    def check(self) -> list[Finding]:
+        """Verify the credentials work, without changing anything.
+
+        A missing database or schema is only a note: uploading creates them.
+        """
+        try:
+            cursor = self.connection.cursor()
+        except Exception as exc:
+            return [Finding("error", f"cannot connect: {str(exc)[:200]}")]
+        try:
+            cursor.execute(
+                "SELECT COUNT(*) FROM information_schema.schemata "
+                f"WHERE catalog_name = '{self.database}' AND schema_name = '{self.schema}'"
+            )
+            rows = cursor.fetchone()
+        except Exception as exc:
+            return [Finding("warning", f"connected, but could not look up the schema: "
+                                       f"{str(exc)[:160]}")]
+        if not rows or not rows[0]:
+            return [Finding("warning", f"{self.database}.{self.schema} does not exist yet; "
+                                       "uploading will create it")]
+        return []
 
     def upload(self, model, *, name: str | None = None, warn: bool = False) -> str:
         """Upload an Ossie model as a Semantic View. Returns its fully qualified name.

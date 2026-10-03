@@ -1,5 +1,6 @@
 """Command line wrapper around the Fabric and Databricks connections.
 
+    ossie-connect check    fabric
     ossie-connect upload   fabric     model.yaml
     ossie-connect download fabric     sales_demo -o model.yaml
     ossie-connect upload   databricks model.yaml
@@ -44,6 +45,11 @@ def _build_parser():
     up.add_argument("--name", help="remote name (default: the model's own name)")
     up.add_argument(
         "--dry-run", action="store_true", help="print what would be sent, connect to nothing"
+    )
+
+    sub.add_parser(
+        "check", parents=[common],
+        help="verify the settings describe something real; writes nothing",
     )
 
     down = sub.add_parser("download", parents=[common], help="platform -> Ossie file")
@@ -132,6 +138,14 @@ def main(argv=None) -> int:
     plain_warnings()
     try:
         connection = _connect(args)
+
+        if args.command == "check":
+            findings = connection.check()
+            for finding in findings:
+                print(f"{finding.level}: {finding.message}", file=sys.stderr)
+            if not findings:
+                print(f"{connection.platform} {connection.target}: ready")
+            return 1 if any(f.fatal for f in findings) else 0
 
         if args.command == "upload":
             targets = _models(args.model)
