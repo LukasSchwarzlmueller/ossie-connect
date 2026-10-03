@@ -237,6 +237,30 @@ storing. Databricks uses the SDK's own resolution: environment variables or a pr
 Fabric transfers use TMSL rather than TMDL, because TMSL is a single `model.bim` part: no
 .NET assemblies and no `tom` extra are involved on either leg.
 
+### Direct Lake or import
+
+Fabric uploads are Direct Lake by default. It is the better shape - no copy of the
+data, no credentials - but it cannot hold a **calculated column**, which is any field
+whose expression is not a plain column reference. A model with one is refused before
+anything is sent, naming the field.
+
+`Fabric(mode="import")` deploys such a model, rewriting the partitions to read the
+lakehouse's SQL endpoint instead:
+
+```python
+Fabric.from_env(mode="import").upload("model.yaml")   # or FABRIC_MODE=import
+```
+
+The trade is credentials. The model deploys, but **refreshing it fails** until a cloud
+connection is bound to that SQL endpoint, which Fabric will not infer:
+
+> We cannot refresh this semantic model because this semantic model uses a default data
+> connection without explicit connection credentials.
+
+That is a one-off step in the model's settings in Fabric, or through the Power BI
+connections API. `ossie-connect` warns about it on every import-mode upload rather than
+doing it, since it means handling someone else's credentials.
+
 ### Direct Lake, and why the lakehouse id matters
 
 Fabric uploads produce Direct Lake partitions. The lakehouse is identified by the OneLake URL

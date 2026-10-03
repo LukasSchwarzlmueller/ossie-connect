@@ -41,6 +41,7 @@ class Fabric:
         lakehouse: str | None = None,
         lakehouse_workspace: str | None = None,
         schema: str = "dbo",
+        mode: str = "directLake",
         token: str | None = None,
         api=None,
         converter=None,
@@ -51,6 +52,9 @@ class Fabric:
         self.lakehouse = lakehouse
         self.lakehouse_workspace = lakehouse_workspace or workspace
         self.schema = schema
+        if mode not in ("directLake", "import"):
+            raise ValueError("mode must be 'directLake' or 'import'")
+        self.mode = mode
         self._token = token
         self._api = api or FabricApi()
         self._lock = threading.Lock()
@@ -65,6 +69,7 @@ class Fabric:
             "lakehouse": os.environ.get("FABRIC_LAKEHOUSE_ID"),
             "lakehouse_workspace": os.environ.get("FABRIC_LAKEHOUSE_WORKSPACE_ID"),
             "schema": os.environ.get("FABRIC_SCHEMA", "dbo"),
+            "mode": os.environ.get("FABRIC_MODE", "directLake"),
         }
         values.update({k: v for k, v in overrides.items() if v is not None})
         if not values["workspace"]:
@@ -170,8 +175,15 @@ class Fabric:
         if check:
             self._preflight()
         bim = self.to_tmsl(model, warn=warn)
-        if self.lakehouse:
+        if self.lakehouse and self.mode == "directLake":
             _refuse_calculated_columns(bim)
+        if self.mode == "import":
+            warnings.warn(
+                f"{self.platform} {self.target}: import mode deploys but cannot refresh "
+                "until a cloud connection is bound to the lakehouse SQL endpoint, in the "
+                "model's settings in Fabric",
+                OssieConnectWarning, stacklevel=2,
+            )
         name = name or bim.get("name")
         if not name:
             raise ValueError("the model has no name, and none was given")
@@ -243,7 +255,58 @@ class Fabric:
         bim.setdefault("model", {}).setdefault(
             "defaultPowerBIDataSourceVersion", "powerBI_V3"
         )
+        if self.mode == "import":
+            self._to_import_partitions(bim)
         return bim
+
+    def _to_import_partitions(self, bim):
+        """Replace Direct Lake partitions with import ones reading the SQL endpoint.
+
+        Direct Lake is the better shape when it fits, but it cannot hold a calculated
+        column - any field whose expression is not a plain column reference. Import can.
+
+        The cost is credentials. The model deploys, but refreshing it fails until a
+        cloud connection is bound to the SQL endpoint, which Fabric will not infer:
+        "this semantic model uses a default data connection without explicit connection
+        credentials". That is a one-off manual step in the model's settings, or through
+        the Power BI connections API - deliberately not done here, since it means
+        handling someone's credentials.
+        """
+        if not self.lakehouse:
+            raise FabricError("import mode needs a lakehouse to read from")
+        endpoint = (
+            self._api.lakehouse(self.lakehouse_workspace, self.lakehouse, self.token)
+            .get("properties", {}).get("sqlEndpointProperties", {})
+        )
+        server, database = endpoint.get("connectionString"), endpoint.get("id")
+        if not server or not database:
+            raise FabricError(
+                f"lakehouse {self.lakehouse} has no SQL endpoint yet "
+                f"(provisioning: {endpoint.get('provisioningStatus', 'unknown')})"
+            )
+
+        model = bim.setdefault("model", {})
+        for table in model.get("tables", []):
+            entity = table["partitions"][0].get("source", {}).get("entityName", table["name"])
+            schema = table["partitions"][0].get("source", {}).get("schemaName", self.schema)
+            table["partitions"] = [{
+                "name": table["name"],
+                "mode": "import",
+                "source": {"type": "m", "expression": [
+                    "let",
+                    f'    Source = Sql.Database("{server}", "{database}"),',
+                    f'    Data = Source{{[Schema="{schema}",Item="{entity}"]}}[Data]',
+                    "in",
+                    "    Data",
+                ]},
+            }]
+        # The shared DatabaseQuery expression models the Direct Lake source only, and
+        # leaving it behind fails the refresh.
+        model["expressions"] = [
+            e for e in model.get("expressions", []) if e.get("name") != "DatabaseQuery"
+        ] or None
+        if model["expressions"] is None:
+            del model["expressions"]
 
     @property
     def target(self) -> str:

@@ -1207,3 +1207,52 @@ def test_cli_delete_reports_nothing_to_remove(capsys, monkeypatch):
     monkeypatch.setattr("ossie_connect.fabric.Fabric.delete", lambda self, name, **k: False)
     assert _run(["delete", "fabric", "absent"], capsys)[0] == 1
     assert _run(["delete", "fabric", "absent", "--missing-ok"], capsys)[0] == 0
+
+
+# --- import mode -----------------------------------------------------------------
+
+@pytest.fixture
+def fabric_import(fabric_api):
+    return Fabric(workspace=WORKSPACE, lakehouse=LAKEHOUSE, mode="import",
+                  token="t", api=fabric_api)
+
+
+def test_import_mode_reads_the_sql_endpoint(fabric_import):
+    table = next(t for t in fabric_import.to_tmsl(MODEL)["model"]["tables"]
+                 if t["name"] == "customers")
+    partition = table["partitions"][0]
+    assert partition["mode"] == "import"
+    m = "\n".join(partition["source"]["expression"])
+    assert "Sql.Database(" in m and 'Item="customers"' in m
+
+
+def test_import_mode_drops_the_direct_lake_expression(fabric_import):
+    """DatabaseQuery models the Direct Lake source; leaving it behind fails a refresh."""
+    assert "expressions" not in fabric_import.to_tmsl(MODEL)["model"]
+
+
+def test_import_mode_allows_what_direct_lake_cannot(fabric_import, fabric_direct_lake):
+    """The whole point: a calculated column deploys in import mode."""
+    with pytest.raises(FabricError, match="calculated columns"):
+        fabric_direct_lake.upload(MODEL)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert fabric_import.upload(MODEL)
+
+
+def test_import_mode_warns_that_it_cannot_refresh(fabric_import):
+    from ossie_connect import OssieConnectWarning
+
+    with pytest.warns(OssieConnectWarning, match="cannot refresh until a cloud connection"):
+        fabric_import.upload(MODEL)
+
+
+def test_import_mode_needs_a_lakehouse(fabric_api):
+    connection = Fabric(workspace=WORKSPACE, mode="import", token="t", api=fabric_api)
+    with pytest.raises(FabricError, match="needs a lakehouse"):
+        connection.to_tmsl(MODEL)
+
+
+def test_mode_must_be_one_of_two():
+    with pytest.raises(ValueError, match="directLake"):
+        Fabric(workspace=WORKSPACE, mode="sideways")
