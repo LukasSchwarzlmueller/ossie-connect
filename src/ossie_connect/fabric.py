@@ -185,7 +185,13 @@ class Fabric:
                 f"no semantic model called '{name}' in workspace {self.workspace}"
             )
         model_bim = self._api.get_definition(self.workspace, item, self.token)
-        return write_model(self._converter.to_ossie(model_bim, warn=warn), out)
+        # Fabric stores the model's name on the item, not in the TMSL, so what comes
+        # back has no `name` and the converter falls back to a generic one. Put the
+        # item's name back before converting, or every downloaded model is called
+        # "semantic_model" and re-uploading it creates a second item under that name.
+        document = json.loads(model_bim)
+        document.setdefault("name", name)
+        return write_model(self._converter.to_ossie(document, warn=warn), out)
 
     def delete(self, name: str, *, item: str | None = None, missing_ok: bool = True) -> bool:
         """Remove a semantic model. Returns whether there was one to remove.

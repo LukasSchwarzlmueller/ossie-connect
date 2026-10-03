@@ -53,9 +53,17 @@ class FakeFabricApi:
         del self.items[name], self.ids[name]
 
     def get_definition(self, workspace, item, token):
+        """As real Fabric does: the stored TMSL has no top-level `name`.
+
+        Fabric keeps the model's name on the item, not in the definition. Observed
+        against a live workspace - the returned document has only `compatibilityLevel`
+        and `model`.
+        """
         self.calls.append(("get_definition", item))
         name = next(n for n, i in self.ids.items() if i == item)
-        return self.items[name]
+        stored = json.loads(self.items[name])
+        stored.pop("name", None)
+        return json.dumps(stored)
 
 
 class FakeDatabricksClient:

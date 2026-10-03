@@ -237,6 +237,13 @@ def test_fabric_creates_when_absent_and_updates_when_present(fabric, fabric_api)
     assert verbs.count("update_item") == 1
 
 
+def test_fabric_download_names_the_model_after_the_item(fabric, fabric_api):
+    """Fabric keeps the name on the item, not in the TMSL, so the converter would
+    otherwise call every downloaded model "semantic_model"."""
+    fabric.upload(MODEL, name="quarterly-sales")
+    assert yaml.safe_load(fabric.download("quarterly-sales"))["name"] == "quarterly-sales"
+
+
 def test_fabric_download_reports_a_missing_model(fabric):
     with pytest.raises(FabricError, match="no semantic model called 'absent'"):
         fabric.download("absent")
