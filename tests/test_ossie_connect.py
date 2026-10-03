@@ -34,6 +34,13 @@ from ossie_connect._model import drop_duplicate_join_keys, qualify_sources
 
 @pytest.fixture
 def fabric(fabric_api):
+    # No lakehouse: Direct Lake forbids the calculated column in the test model, which
+    # is the subject of its own tests below rather than a constraint on every upload.
+    return Fabric(workspace=WORKSPACE, token="t", api=fabric_api)
+
+
+@pytest.fixture
+def fabric_direct_lake(fabric_api):
     return Fabric(workspace=WORKSPACE, lakehouse=LAKEHOUSE, token="t", api=fabric_api)
 
 
@@ -185,14 +192,33 @@ def test_dedupe_can_be_turned_off_to_see_the_converters_own_error(databricks):
 
 # --- Fabric ----------------------------------------------------------------------
 
-def test_fabric_uses_the_lakehouse_id_in_the_onelake_url(fabric):
-    url = "\n".join(fabric.to_tmsl(MODEL)["model"]["expressions"][0]["expression"])
+def test_fabric_uses_the_lakehouse_id_in_the_onelake_url(fabric_direct_lake):
+    bim = fabric_direct_lake.to_tmsl(MODEL)
+    url = "\n".join(bim["model"]["expressions"][0]["expression"])
     assert f"{WORKSPACE}/{LAKEHOUSE}" in url
 
 
-def test_fabric_without_a_lakehouse_falls_back_to_a_placeholder(fabric_api):
-    connection = Fabric(workspace=WORKSPACE, token="t", api=fabric_api)
-    url = "\n".join(connection.to_tmsl(MODEL)["model"]["expressions"][0]["expression"])
+def test_fabric_always_marks_the_model_as_v3(fabric):
+    """Fabric refuses a TMSL import without it: "supported for V3 models only"."""
+    assert fabric.to_tmsl(MODEL)["model"]["defaultPowerBIDataSourceVersion"] == "powerBI_V3"
+
+
+def test_direct_lake_refuses_calculated_columns(fabric_direct_lake):
+    """Caught here rather than as an opaque failure from Fabric seconds later."""
+    with pytest.raises(FabricError, match="customers.customer_name"):
+        fabric_direct_lake.upload(MODEL)
+
+
+def test_direct_lake_still_previews_so_you_can_see_why(fabric_direct_lake):
+    assert '"type": "calculated"' in fabric_direct_lake.preview(MODEL)
+
+
+def test_without_a_lakehouse_calculated_columns_are_fine(fabric):
+    assert fabric.upload(MODEL)
+
+
+def test_fabric_without_a_lakehouse_falls_back_to_a_placeholder(fabric):
+    url = "\n".join(fabric.to_tmsl(MODEL)["model"]["expressions"][0]["expression"])
     assert "00000000-0000-0000-0000-000000000000" in url
 
 
@@ -706,7 +732,8 @@ def test_databricks_at_deploys_to_two_schemas_with_one_client(databricks,
     assert created == ["main.sales.sales_demo", "main.marketing.sales_demo"]
 
 
-def test_fabric_at_shares_the_token(fabric, fabric_api):
+def test_fabric_at_shares_the_token(fabric_direct_lake, fabric_api):
+    fabric = fabric_direct_lake
     other = fabric.at(workspace="99999999-9999-9999-9999-999999999999")
     assert other.token == fabric.token
     assert other._api is fabric_api
@@ -934,3 +961,114 @@ def test_databricks_without_a_warehouse_warns_that_the_read_is_lossy():
     reader = Databricks(catalog="main", schema="sales", client=client)
     with pytest.warns(OssieConnectWarning, match="synonyms and comments are dropped"):
         reader.download("sales_demo")
+
+
+# --- delete ----------------------------------------------------------------------
+
+def test_fabric_delete_removes_the_item(fabric, fabric_api):
+    fabric.upload(MODEL)
+    assert fabric.delete("sales_demo") is True
+    assert fabric_api.items == {}
+    assert ("delete_item", ITEM) in fabric_api.calls
+
+
+def test_fabric_delete_tolerates_a_missing_model(fabric):
+    assert fabric.delete("never-existed") is False
+
+
+def test_fabric_delete_can_insist_the_model_exists(fabric):
+    with pytest.raises(FabricError, match="no semantic model called 'nope'"):
+        fabric.delete("nope", missing_ok=False)
+
+
+def test_databricks_delete_drops_the_view(databricks, databricks_client):
+    databricks.upload(MODEL)
+    databricks.delete("sales_demo")
+    assert "DROP VIEW IF EXISTS main.sales.sales_demo" in databricks_client.statements
+    assert "main.sales.sales_demo" not in databricks_client.views
+
+
+def test_snowflake_delete_drops_the_semantic_view(snowflake, snowflake_connection):
+    snowflake.delete("sales_demo")
+    assert snowflake_connection.statements[-1] == (
+        "DROP SEMANTIC VIEW IF EXISTS OSSIE_DEMO.PUBLIC.sales_demo"
+    )
+
+
+@pytest.mark.parametrize("name", ["fabric", "databricks", "snowflake"])
+def test_upload_then_delete_leaves_nothing_behind(name, request):
+    """A script that creates things in someone else's tenant must be able to unmake them."""
+    connection = request.getfixturevalue(name)
+    connection.upload(MODEL)
+    assert connection.delete("sales_demo") is True
+
+
+# --- preflight -------------------------------------------------------------------
+
+def test_check_passes_for_a_lakehouse_that_exists(fabric_direct_lake):
+    assert fabric_direct_lake.check() == []
+
+
+def test_check_names_the_lakehouses_that_do_exist(fabric_api):
+    from ossie_connect import Fabric
+
+    connection = Fabric(workspace=WORKSPACE, lakehouse="deadbeef-0000-0000-0000-000000000000",
+                        token="t", api=fabric_api)
+    problem = connection.check()[0]
+    assert problem.fatal
+    assert "is not in workspace" in problem.message and "raw" in problem.message
+
+
+def test_check_warns_when_there_is_no_lakehouse(fabric):
+    findings = fabric.check()
+    assert [f.level for f in findings] == ["warning"]
+    assert "can never refresh" in findings[0].message
+
+
+def test_check_reports_an_unreadable_workspace(fabric_api):
+    from ossie_connect import Fabric
+
+    connection = Fabric(workspace="99999999-9999-9999-9999-999999999999", token="t",
+                        api=fabric_api)
+    assert "cannot be read" in connection.check()[0].message
+
+
+def test_upload_refuses_a_lakehouse_that_is_not_there(fabric_api):
+    from ossie_connect import Fabric
+    from ossie_connect.preflight import PreflightError
+
+    connection = Fabric(workspace=WORKSPACE, lakehouse="deadbeef-0000-0000-0000-000000000000",
+                        token="t", api=fabric_api)
+    with pytest.raises(PreflightError, match="is not in workspace"):
+        connection.upload(MODEL)
+    assert not any(c[0] == "create_item" for c in fabric_api.calls), "nothing was written"
+
+
+def test_upload_warns_but_proceeds_without_a_lakehouse(fabric):
+    from ossie_connect import OssieConnectWarning
+
+    with pytest.warns(OssieConnectWarning, match="can never refresh"):
+        assert fabric.upload(MODEL)
+
+
+def test_preflight_runs_once_per_connection(fabric, fabric_api):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fabric.upload(MODEL)
+        fabric.upload(MODEL)
+    assert [c[0] for c in fabric_api.calls].count("list_items") == 1
+
+
+def test_preflight_can_be_skipped(fabric_api):
+    """check=False goes straight to the write, for callers who have already checked."""
+    from ossie_connect import Fabric, Yaml
+
+    document = yaml.safe_load(MODEL.read_text())
+    for dataset in document["datasets"]:   # Direct Lake forbids the calculated column
+        dataset["fields"] = [f for f in dataset["fields"] if f["name"] != "customer_name"]
+    plain = Yaml(yaml.safe_dump(document, sort_keys=False))
+
+    connection = Fabric(workspace=WORKSPACE, lakehouse="deadbeef-0000-0000-0000-000000000000",
+                        token="t", api=fabric_api)
+    assert connection.upload(plain, check=False)
+    assert not any(c[0] == "list_items" for c in fabric_api.calls)

@@ -19,6 +19,15 @@ class FakeFabricApi:
         self.ids = {name: ITEM for name in self.items}
         self.calls = []
 
+    lakehouses = [{"id": "22222222-2222-2222-2222-222222222222",
+                   "displayName": "raw", "type": "Lakehouse"}]
+
+    def list_items(self, workspace, token, kind=None):
+        self.calls.append(("list_items", kind))
+        if workspace != WORKSPACE:
+            return 404, {"message": "not found"}, {}
+        return 200, {"value": self.lakehouses}, {}
+
     def acquire_token(self):
         self.calls.append(("acquire_token",))
         return "fake-token"
@@ -37,6 +46,11 @@ class FakeFabricApi:
         self.calls.append(("update_item", item))
         name = next(n for n, i in self.ids.items() if i == item)
         self.items[name] = json.dumps(bim)
+
+    def delete_item(self, workspace, item, token):
+        self.calls.append(("delete_item", item))
+        name = next(n for n, i in self.ids.items() if i == item)
+        del self.items[name], self.ids[name]
 
     def get_definition(self, workspace, item, token):
         self.calls.append(("get_definition", item))
@@ -81,6 +95,8 @@ class FakeDatabricksClient:
             elif statement.startswith("CREATE OR REPLACE VIEW"):
                 name = statement.split()[4]
                 self.outer.views[name] = statement
+            elif statement.startswith("DROP VIEW"):
+                self.outer.views.pop(statement.split()[-1], None)
             result = type("Result", (), {"data_array": rows})() if rows else None
             return type("Response", (), {"status": None, "result": result})()
 

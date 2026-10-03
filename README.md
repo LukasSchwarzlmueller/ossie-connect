@@ -11,9 +11,14 @@ needed". This package adds the part they leave out: authenticating, creating or 
 object in a live workspace, and fetching it back.
 
 ```bash
-pip install ossie-connect                # Fabric + Databricks
-pip install "ossie-connect[snowflake]"   # adds Snowflake
+pip install ossie-connect                # Fabric and Databricks, both included
+pip install "ossie-connect[snowflake]"   # the above, plus Snowflake
 ```
+
+Only Snowflake is an extra, because its connector roughly doubles the install - 18
+packages and 36 MB becomes 36 packages and 80 MB. Fabric talks to the REST API over
+`urllib` and needs nothing, and `databricks-sdk` is small, so neither is worth making
+optional.
 
 ## Python
 

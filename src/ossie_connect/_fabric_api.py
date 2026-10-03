@@ -52,8 +52,13 @@ def encode_part(value) -> str:
     return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
 
-def _resolve(status, body, headers, token, what):
-    """Return a completed response body, following a 202 long-running operation."""
+def _resolve(status, body, headers, token, what, expect_result=True):
+    """Return a completed response body, following a 202 long-running operation.
+
+    `expect_result` is False for operations that finish without producing one. Creating
+    an item returns the new item; updating or deleting a definition returns nothing, and
+    asking anyway answers HTTP 400 OperationHasNoResult - a success reported as failure.
+    """
     if status in (200, 201):
         return body
     if status == 202:
@@ -63,6 +68,8 @@ def _resolve(status, body, headers, token, what):
         result = wait_for_operation(operation, token)
         if result.get("status") != "Succeeded":
             raise FabricError(f"{what} did not succeed: {json.dumps(result)[:2000]}")
+        if not expect_result:
+            return None
         result_status, created, _headers = request("GET", f"{operation}/result", token)
         if result_status != 200:
             raise FabricError(
@@ -108,14 +115,16 @@ def _update_item(workspace, item, bim, token):
     """Replace an existing semantic model's definition, keeping its id."""
     status, body, headers = request(
         "POST",
-        f"{FABRIC_API}/workspaces/{workspace}/semanticModels/{item}"
-        "/updateDefinition?updateMetadata=True",
+        # No updateMetadata: it requires a .platform part ("UpdateMetadata is true
+        # but .platform file was not provided"), and only the definition changes here.
+        f"{FABRIC_API}/workspaces/{workspace}/semanticModels/{item}/updateDefinition",
         token,
         {"definition": {"parts": _parts(bim)}},
     )
     if status == 204:
         return
-    _resolve(status, body, headers, token, "updating the semantic model")
+    _resolve(status, body, headers, token, "updating the semantic model",
+             expect_result=False)
 
 
 def _get_definition(workspace, item, token):
@@ -135,6 +144,16 @@ def _get_definition(workspace, item, token):
         "the downloaded definition has no model.bim part; got: "
         + ", ".join(sorted(p.get("path", "?") for p in parts))
     )
+
+
+def _delete_item(workspace, item, token):
+    status, body, headers = request(
+        "DELETE", f"{FABRIC_API}/workspaces/{workspace}/items/{item}", token
+    )
+    if status in (200, 202, 204):
+        return
+    _resolve(status, body, headers, token, "deleting the semantic model",
+             expect_result=False)
 
 
 def _parts(bim):
@@ -166,6 +185,13 @@ class FabricApi:
 
     def get_definition(self, workspace, item, token):
         return _get_definition(workspace, item, token)
+
+    def delete_item(self, workspace, item, token):
+        return _delete_item(workspace, item, token)
+
+    def list_items(self, workspace, token, kind=None):
+        suffix = f"?type={kind}" if kind else ""
+        return request("GET", f"{FABRIC_API}/workspaces/{workspace}/items{suffix}", token)
 
     def acquire_token(self):
         return acquire_token()

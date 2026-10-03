@@ -3,11 +3,14 @@
 import json
 import os
 import threading
+import warnings
 
+from ._convert import OssieConnectWarning
 from ._converters import FabricConverter
 from ._fabric_api import FabricApi, FabricError
 from ._io import read_model, write_model
 from ._model import qualify_sources
+from .preflight import Finding, PreflightError
 
 
 class Fabric:
@@ -51,6 +54,7 @@ class Fabric:
         self._token = token
         self._api = api or FabricApi()
         self._lock = threading.Lock()
+        self._checked = False
         self._converter = converter or FabricConverter()
 
     @classmethod
@@ -95,13 +99,69 @@ class Fabric:
                 self._token = self._api.acquire_token()
             return self._token
 
-    def upload(self, model, *, name: str | None = None, warn: bool = False) -> str:
+    def check(self) -> list[Finding]:
+        """Verify the workspace and lakehouse exist, without changing anything.
+
+        Worth doing because Fabric validates these at different moments: `createItem`
+        never resolves the Direct Lake reference, while `updateDefinition` does. A
+        lakehouse id that is not in this workspace therefore gives a first upload that
+        succeeds and a second that fails, days later, with an artifact-not-found GUID.
+        """
+        findings = []
+        try:
+            token = self.token
+        except FabricError as exc:
+            return [Finding("error", str(exc))]
+
+        status, body, _ = self._api.list_items(self.workspace, token, kind="Lakehouse")
+        if status != 200:
+            return [Finding(
+                "error",
+                f"workspace {self.workspace} cannot be read (HTTP {status}) - wrong id, "
+                "no permission, or the token is for another tenant",
+            )]
+
+        lakehouses = {i["id"]: i.get("displayName") for i in (body or {}).get("value", [])}
+        if not self.lakehouse:
+            findings.append(Finding(
+                "warning",
+                "no lakehouse set, so the Direct Lake source is a placeholder: the model "
+                "uploads but can never refresh, and a second upload will fail",
+            ))
+        elif self.lakehouse not in lakehouses:
+            known = ", ".join(f"{n} ({i})" for i, n in lakehouses.items()) or "none"
+            findings.append(Finding(
+                "error",
+                f"lakehouse {self.lakehouse} is not in workspace {self.workspace}; "
+                f"it has: {known}",
+            ))
+        return findings
+
+    def _preflight(self):
+        """Check once per connection, not once per upload."""
+        if self._checked:
+            return
+        findings = self.check()
+        for finding in findings:
+            if not finding.fatal:
+                warnings.warn(f"{self.platform} {self.target}: {finding.message}",
+                              OssieConnectWarning, stacklevel=4)
+        if any(f.fatal for f in findings):
+            raise PreflightError(findings)
+        self._checked = True
+
+    def upload(self, model, *, name: str | None = None, warn: bool = False,
+               check: bool = True) -> str:
         """Upload an Ossie model as a semantic model. Returns its Fabric item id.
 
         `model` is a path, or `Yaml(...)` holding the document itself. An item of the
         same name is updated in place rather than duplicated, so uploading twice is safe.
         """
+        if check:
+            self._preflight()
         bim = self.to_tmsl(model, warn=warn)
+        if self.lakehouse:
+            _refuse_calculated_columns(bim)
         name = name or bim.get("name")
         if not name:
             raise ValueError("the model has no name, and none was given")
@@ -127,6 +187,22 @@ class Fabric:
         model_bim = self._api.get_definition(self.workspace, item, self.token)
         return write_model(self._converter.to_ossie(model_bim, warn=warn), out)
 
+    def delete(self, name: str, *, item: str | None = None, missing_ok: bool = True) -> bool:
+        """Remove a semantic model. Returns whether there was one to remove.
+
+        Uploads create real items in a real workspace; a script that makes them should
+        be able to unmake them, especially in someone else's tenant.
+        """
+        item = item or self._api.find_item(self.workspace, name, self.token)
+        if not item:
+            if missing_ok:
+                return False
+            raise FabricError(
+                f"no semantic model called '{name}' in workspace {self.workspace}"
+            )
+        self._api.delete_item(self.workspace, item, self.token)
+        return True
+
     def preview(self, model, *, name: str | None = None, warn: bool = False) -> str:
         """The model.bim `upload` would send. Touches no network."""
         return json.dumps(self.to_tmsl(model, warn=warn), indent=2)
@@ -139,7 +215,15 @@ class Fabric:
             if self.lakehouse
             else None
         )
-        return self._converter.to_platform(ossie_yaml, source=source, warn=warn)
+        bim = self._converter.to_platform(ossie_yaml, source=source, warn=warn)
+        # Fabric refuses a TMSL document without this: "Import from JSON supported for
+        # V3 models only" (Dataset_Import_FailedToImportDataset). The converter does not
+        # set it - it produces a model, not a deployable item - so it is set here, where
+        # the document is being prepared to send.
+        bim.setdefault("model", {}).setdefault(
+            "defaultPowerBIDataSourceVersion", "powerBI_V3"
+        )
+        return bim
 
     @property
     def target(self) -> str:
@@ -148,3 +232,27 @@ class Fabric:
 
     def __repr__(self):
         return f"Fabric(workspace={self.workspace!r}, lakehouse={self.lakehouse!r})"
+
+
+def _refuse_calculated_columns(bim):
+    """Direct Lake tables cannot hold calculated columns; say so before sending.
+
+    A field with an expression that is not a bare column name becomes a calculated
+    column, and Fabric rejects the whole import with "Standard expression context may
+    not be used for calculated columns in Direct Lake tables". That arrives as an
+    opaque long-running-operation failure several seconds later, so it is worth
+    catching here and naming the fields responsible.
+    """
+    offenders = [
+        f"{table.get('name')}.{column.get('name')}"
+        for table in bim.get("model", {}).get("tables", [])
+        for column in table.get("columns", [])
+        if column.get("type") == "calculated"
+    ]
+    if offenders:
+        raise FabricError(
+            f"Direct Lake cannot hold calculated columns: {', '.join(offenders)}. "
+            "Each has an expression that is not a plain column reference. Either give "
+            "the field a bare column expression, or deploy without a lakehouse so the "
+            "partitions are not Direct Lake."
+        )

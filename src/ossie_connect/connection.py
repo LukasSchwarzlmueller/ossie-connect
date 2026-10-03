@@ -30,6 +30,10 @@ class SupportsUpload(Protocol):
         """What `upload` would send, as text. Touches no network."""
         ...
 
+    def delete(self, name: str, *, missing_ok: bool = True) -> bool:
+        """Remove what `upload` created. Returns whether there was anything to remove."""
+        ...
+
 
 @runtime_checkable
 class SupportsDownload(Protocol):

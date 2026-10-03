@@ -159,6 +159,13 @@ class Snowflake:
         cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {self.database}.{self.schema}")
         self._prepared = True
 
+    def delete(self, name: str, *, missing_ok: bool = True) -> bool:
+        """Drop a Semantic View. Returns whether there was one to drop."""
+        full_name = name if name.count(".") == 2 else f"{self.database}.{self.schema}.{name}"
+        exists = "IF EXISTS " if missing_ok else ""
+        self.connection.cursor().execute(f"DROP SEMANTIC VIEW {exists}{full_name}")
+        return True
+
     def preview(self, model, *, name: str | None = None, warn: bool = False) -> str:
         """The CALL statement `upload` would run. Touches no network."""
         return self._create_call(self.to_semantic_view(model, warn=warn))

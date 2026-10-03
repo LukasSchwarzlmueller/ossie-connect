@@ -118,6 +118,13 @@ class Databricks:
         )
         return write_model(ossie_yaml, out)
 
+    def delete(self, name: str, *, missing_ok: bool = True) -> bool:
+        """Drop a Metric View. Returns whether there was one to drop."""
+        full_name = name if name.count(".") == 2 else f"{self.catalog}.{self.schema}.{name}"
+        exists = "IF EXISTS " if missing_ok else ""
+        self._execute(f"DROP VIEW {exists}{full_name}")
+        return True
+
     def preview(self, model, *, name: str | None = None, warn: bool = False) -> str:
         """The CREATE OR REPLACE VIEW statement `upload` would run. Touches no network."""
         ossie_yaml = read_model(model)
