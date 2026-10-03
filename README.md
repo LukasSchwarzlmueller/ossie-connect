@@ -245,7 +245,18 @@ whose expression is not a plain column reference. A model with one is refused be
 anything is sent, naming the field.
 
 `Fabric(mode="import")` deploys such a model, rewriting the partitions to read the
-lakehouse's SQL endpoint instead:
+lakehouse's SQL endpoint and computing the field in SQL rather than DAX:
+
+```
+Value.NativeQuery(Source,
+  "SELECT [customer_id], UPPER(customer_name) AS [customer_name],
+          [customer_segment] FROM [dbo].[customers]")
+```
+
+Writing it as a calculated column instead does not work: the converter names the column
+after the source column it reads, which is not in the model, so the DAX refers to
+itself and Power BI reports "a single value for column 'customer_name' cannot be
+determined".
 
 ```python
 Fabric.from_env(mode="import").upload("model.yaml")   # or FABRIC_MODE=import
@@ -260,6 +271,12 @@ connection is bound to that SQL endpoint, which Fabric will not infer:
 That is a one-off step in the model's settings in Fabric, or through the Power BI
 connections API. `ossie-connect` warns about it on every import-mode upload rather than
 doing it, since it means handling someone else's credentials.
+
+Direct Lake remains the default; `mode` is the only thing that changes it, from the
+constructor, `from_env(mode=...)` or `FABRIC_MODE`. Before reaching for import, it is
+worth asking whether the expression can move upstream instead - a view over the
+lakehouse table computing `UPPER(customer_name)` keeps the model on Direct Lake, which
+refreshes with no credentials to bind.
 
 ### Direct Lake, and why the lakehouse id matters
 

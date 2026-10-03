@@ -1223,7 +1223,30 @@ def test_import_mode_reads_the_sql_endpoint(fabric_import):
     partition = table["partitions"][0]
     assert partition["mode"] == "import"
     m = "\n".join(partition["source"]["expression"])
-    assert "Sql.Database(" in m and 'Item="customers"' in m
+    assert "Sql.Database(" in m and "[dbo].[customers]" in m
+
+
+def test_import_mode_computes_in_sql_not_dax(fabric_import):
+    """The converter writes a computed field as a calculated column named after the
+    source column it reads. In import mode that source column is not in the model, so
+    the DAX refers to itself and Power BI fails with "a single value for column
+    'customer_name' cannot be determined". The expression belongs in the query."""
+    table = next(t for t in fabric_import.to_tmsl(MODEL)["model"]["tables"]
+                 if t["name"] == "customers")
+    query = "\n".join(table["partitions"][0]["source"]["expression"])
+    assert "UPPER(customer_name) AS [customer_name]" in query
+
+    column = next(c for c in table["columns"] if c["name"] == "customer_name")
+    assert column.get("type") != "calculated", "no DAX should remain"
+    assert column["sourceColumn"] == "customer_name"
+
+
+def test_import_mode_projects_every_column(fabric_import):
+    """A field missing from the SELECT would be missing from the table."""
+    for table in fabric_import.to_tmsl(MODEL)["model"]["tables"]:
+        query = "\n".join(table["partitions"][0]["source"]["expression"])
+        for column in table["columns"]:
+            assert f'[{column["name"]}]' in query
 
 
 def test_import_mode_drops_the_direct_lake_expression(fabric_import):
