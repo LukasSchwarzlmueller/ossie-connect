@@ -31,8 +31,7 @@ def acquire_token() -> str:
 
     if shutil.which("az") is None:
         raise FabricError(
-            "no Fabric credential: install the Azure CLI and run `az login`, or set "
-            "FABRIC_TOKEN to a token for https://api.fabric.microsoft.com"
+            "no credential - run `az login`, or set FABRIC_TOKEN"
         )
     try:
         result = subprocess.run(
@@ -42,7 +41,7 @@ def acquire_token() -> str:
         )
     except subprocess.CalledProcessError as exc:
         raise FabricError(
-            f"`az account get-access-token` failed - run `az login` first:\n{exc.stderr.strip()}"
+            f"`az login` needed - {exc.stderr.strip().splitlines()[-1] if exc.stderr.strip() else 'az returned no token'}"
         ) from exc
     return result.stdout.strip()
 

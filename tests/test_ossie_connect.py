@@ -823,5 +823,5 @@ def test_every_connection_says_where_it_points(name, expected, request):
 
 def test_the_join_key_warning_names_the_platform_that_raised_it(databricks):
     """It lands on stderr among other platforms' output; unattributed it is noise."""
-    with pytest.warns(UserWarning, match=r"^Databricks main\.sales: dropped join-key"):
+    with pytest.warns(UserWarning, match=r"^Databricks main\.sales: dropped customers\.customer_id"):
         databricks.to_metric_view(MODEL)

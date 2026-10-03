@@ -118,7 +118,7 @@ class Snowflake:
                 if not value
             ]
             if missing:
-                raise SnowflakeError(f"missing credentials: {', '.join(missing)}")
+                raise SnowflakeError(f"no credential - set {', '.join(missing)}")
             import snowflake.connector
 
             self._connection = snowflake.connector.connect(

@@ -149,9 +149,8 @@ class Databricks:
                 # Named, because this lands on stderr among other platforms' output
                 # and is otherwise impossible to attribute.
                 warnings.warn(
-                    f"{self.platform} {self.target}: dropped join-key field(s) a "
-                    f"Metric View would reject as duplicate dimensions: "
-                    f"{', '.join(removed)}; they remain in primary_key",
+                    f"{self.platform} {self.target}: dropped {', '.join(removed)} "
+                    "(duplicate dimension; still in primary_key)",
                     stacklevel=2,
                 )
         return self._converter.to_platform(ossie_yaml, warn=warn)
@@ -159,8 +158,7 @@ class Databricks:
     def _execute(self, statement: str):
         if not self.warehouse_id:
             raise DatabricksError(
-                "no warehouse_id: this runs SQL, so it needs a SQL warehouse. Set "
-                "DATABRICKS_WAREHOUSE_ID or pass warehouse_id="
+                "no warehouse_id - set DATABRICKS_WAREHOUSE_ID, or pass warehouse_id="
             )
         result = self.client.statement_execution.execute_statement(
             statement=statement, warehouse_id=self.warehouse_id, wait_timeout="30s"
