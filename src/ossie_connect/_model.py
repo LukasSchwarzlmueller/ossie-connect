@@ -12,6 +12,7 @@ def model_name(ossie_yaml: str) -> str:
     return name
 
 
+# UPSTREAM 5: deployment targeting, but it still edits the model. See UPSTREAM.md.
 def qualify_sources(ossie_yaml: str, prefix: str, parts: int) -> str:
     """Prefix any dataset `source:` that is not already fully qualified.
 
@@ -35,6 +36,7 @@ def qualify_sources(ossie_yaml: str, prefix: str, parts: int) -> str:
     return Yaml(yaml.safe_dump(document, sort_keys=False, allow_unicode=True))
 
 
+# UPSTREAM 4: this edits the user's model. See UPSTREAM.md.
 def drop_duplicate_join_keys(ossie_yaml: str) -> tuple[str, list[str]]:
     """Remove join-key fields that Unity Catalog would reject as duplicate dimensions.
 

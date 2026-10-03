@@ -43,7 +43,6 @@ class Fabric:
         lakehouse: str | None = None,
         lakehouse_workspace: str | None = None,
         schema: str = "dbo",
-        mode: str = "directLake",
         token: str | None = None,
         api=None,
         converter=None,
@@ -54,9 +53,6 @@ class Fabric:
         self.lakehouse = lakehouse
         self.lakehouse_workspace = lakehouse_workspace or workspace
         self.schema = schema
-        if mode not in ("directLake", "import"):
-            raise ValueError("mode must be 'directLake' or 'import'")
-        self.mode = mode
         self._token = token
         self._api = api or FabricApi()
         self._lock = threading.Lock()
@@ -71,7 +67,6 @@ class Fabric:
             "lakehouse": os.environ.get("FABRIC_LAKEHOUSE_ID"),
             "lakehouse_workspace": os.environ.get("FABRIC_LAKEHOUSE_WORKSPACE_ID"),
             "schema": os.environ.get("FABRIC_SCHEMA", "dbo"),
-            "mode": os.environ.get("FABRIC_MODE", "directLake"),
         }
         values.update({k: v for k, v in overrides.items() if v is not None})
         if not values["workspace"]:
@@ -177,15 +172,8 @@ class Fabric:
         if check:
             self._preflight()
         bim = self.to_tmsl(model, warn=warn)
-        if self.lakehouse and self.mode == "directLake":
+        if self.lakehouse:
             _refuse_calculated_columns(bim)
-        if self.mode == "import":
-            warnings.warn(
-                f"{self.platform} {self.target}: import mode deploys but cannot refresh "
-                "until a cloud connection is bound to the lakehouse SQL endpoint, in the "
-                "model's settings in Fabric",
-                OssieConnectWarning, stacklevel=2,
-            )
         name = name or bim.get("name")
         if not name:
             raise ValueError("the model has no name, and none was given")
@@ -214,6 +202,8 @@ class Fabric:
         # item's name back before converting, or every downloaded model is called
         # "semantic_model" and re-uploading it creates a second item under that name.
         document = json.loads(model_bim)
+        # UPSTREAM 3: convert_semantic_model_to_ossie takes no name, unlike the
+        # Databricks converter.
         document.setdefault("name", name)
         return write_model(self._converter.to_ossie(document, warn=warn), out)
 
@@ -255,76 +245,10 @@ class Fabric:
         # set it - it produces a model, not a deployable item - so it is set here, where
         # the document is being prepared to send.
         bim.setdefault("model", {}).setdefault(
+            # UPSTREAM 1: the converter omits this and Fabric rejects the import.
             "defaultPowerBIDataSourceVersion", "powerBI_V3"
         )
-        if self.mode == "import":
-            self._to_import_partitions(bim, yaml.safe_load(ossie_yaml))
         return bim
-
-    def _to_import_partitions(self, bim, document):
-        """Replace Direct Lake partitions with import ones reading the SQL endpoint.
-
-        Direct Lake cannot hold a calculated column - any field whose expression is not
-        a plain column reference. Import can, but should not: the converter writes such
-        a field as a calculated column named after the source column it reads, and in
-        import mode that source column is not in the model, so the DAX refers to itself
-        and the column fails with "a single value cannot be determined".
-
-        Since the query is ours here, the expression goes in the SQL instead. Each field
-        is projected with its ANSI SQL expression aliased to the field name, and the
-        column becomes an ordinary imported one with no DAX at all.
-
-        The cost is credentials. The model deploys, but refreshing it fails until a
-        cloud connection is bound to the SQL endpoint, which Fabric will not infer:
-        "this semantic model uses a default data connection without explicit connection
-        credentials". That is a one-off manual step, deliberately not done here since it
-        means handling someone's credentials.
-        """
-        if not self.lakehouse:
-            raise FabricError("import mode needs a lakehouse to read from")
-        endpoint = (
-            self._api.lakehouse(self.lakehouse_workspace, self.lakehouse, self.token)
-            .get("properties", {}).get("sqlEndpointProperties", {})
-        )
-        server, database = endpoint.get("connectionString"), endpoint.get("id")
-        if not server or not database:
-            raise FabricError(
-                f"lakehouse {self.lakehouse} has no SQL endpoint yet "
-                f"(provisioning: {endpoint.get('provisioningStatus', 'unknown')})"
-            )
-
-        datasets = {d.get("name"): d for d in document.get("datasets") or []}
-        model = bim.setdefault("model", {})
-        for table in model.get("tables", []):
-            source = table["partitions"][0].get("source", {})
-            entity = source.get("entityName", table["name"])
-            schema = source.get("schemaName", self.schema)
-            select = _select_for(datasets.get(table["name"]), table)
-            table["partitions"] = [{
-                "name": table["name"],
-                "mode": "import",
-                "source": {"type": "m", "expression": [
-                    "let",
-                    f'    Source = Sql.Database("{server}", "{database}"),',
-                    "    Data = Value.NativeQuery(Source, \"" +
-                    f'{select} FROM [{schema}].[{entity}]' + '\")',
-                    "in",
-                    "    Data",
-                ]},
-            }]
-            # Whatever the SQL now computes is an ordinary column.
-            for column in table.get("columns", []):
-                if column.pop("type", None) == "calculated":
-                    column.pop("expression", None)
-                    column["sourceColumn"] = column["name"]
-
-        # DatabaseQuery models the Direct Lake source; leaving it fails the refresh.
-        remaining = [e for e in model.get("expressions", [])
-                     if e.get("name") != "DatabaseQuery"]
-        if remaining:
-            model["expressions"] = remaining
-        else:
-            model.pop("expressions", None)
 
     @property
     def target(self) -> str:
@@ -333,28 +257,6 @@ class Fabric:
 
     def __repr__(self):
         return f"Fabric(workspace={self.workspace!r}, lakehouse={self.lakehouse!r})"
-
-
-def _select_for(dataset, table):
-    """A SELECT projecting each field with its SQL expression, aliased to its name.
-
-    Falls back to the column name for anything the model does not give SQL for, so a
-    field is never silently dropped from the query.
-    """
-    expressions = {}
-    for field in (dataset or {}).get("fields") or []:
-        dialects = (field.get("expression") or {}).get("dialects") or []
-        sql = next((d.get("expression") for d in dialects
-                    if str(d.get("dialect", "")).upper() == "ANSI_SQL"), None)
-        if sql:
-            expressions[field["name"]] = sql
-
-    parts = []
-    for column in table.get("columns", []):
-        name = column["name"]
-        source = expressions.get(name, column.get("sourceColumn") or name)
-        parts.append(f"{source} AS [{name}]" if source != name else f"[{name}]")
-    return "SELECT " + ", ".join(parts) if parts else "SELECT *"
 
 
 def _refuse_calculated_columns(bim):

@@ -238,6 +238,7 @@ class SnowflakeError(RuntimeError):
     """A Snowflake call failed, or the connection is not usable."""
 
 
+# UPSTREAM 2: the converter emits metrics Snowflake refuses. See UPSTREAM.md.
 def nest_metrics_per_table(semantic_view_yaml: str) -> str:
     """Move top-level metrics under the table that owns them.
 

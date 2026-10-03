@@ -237,46 +237,21 @@ storing. Databricks uses the SDK's own resolution: environment variables or a pr
 Fabric transfers use TMSL rather than TMDL, because TMSL is a single `model.bim` part: no
 .NET assemblies and no `tom` extra are involved on either leg.
 
-### Direct Lake or import
+### Direct Lake, and calculated columns
 
-Fabric uploads are Direct Lake by default. It is the better shape - no copy of the
-data, no credentials - but it cannot hold a **calculated column**, which is any field
-whose expression is not a plain column reference. A model with one is refused before
-anything is sent, naming the field.
-
-`Fabric(mode="import")` deploys such a model, rewriting the partitions to read the
-lakehouse's SQL endpoint and computing the field in SQL rather than DAX:
+Fabric uploads are Direct Lake. It cannot hold a **calculated column**, which is any
+field whose expression is not a plain column reference, so a model with one is refused
+before anything is sent, naming the field:
 
 ```
-Value.NativeQuery(Source,
-  "SELECT [customer_id], UPPER(customer_name) AS [customer_name],
-          [customer_segment] FROM [dbo].[customers]")
+Direct Lake cannot hold calculated columns: customers.customer_name.
+Either give the field a bare column expression, or deploy without a lakehouse.
 ```
 
-Writing it as a calculated column instead does not work: the converter names the column
-after the source column it reads, which is not in the model, so the DAX refers to
-itself and Power BI reports "a single value for column 'customer_name' cannot be
-determined".
-
-```python
-Fabric.from_env(mode="import").upload("model.yaml")   # or FABRIC_MODE=import
-```
-
-The trade is credentials. The model deploys, but **refreshing it fails** until a cloud
-connection is bound to that SQL endpoint, which Fabric will not infer:
-
-> We cannot refresh this semantic model because this semantic model uses a default data
-> connection without explicit connection credentials.
-
-That is a one-off step in the model's settings in Fabric, or through the Power BI
-connections API. `ossie-connect` warns about it on every import-mode upload rather than
-doing it, since it means handling someone else's credentials.
-
-Direct Lake remains the default; `mode` is the only thing that changes it, from the
-constructor, `from_env(mode=...)` or `FABRIC_MODE`. Before reaching for import, it is
-worth asking whether the expression can move upstream instead - a view over the
-lakehouse table computing `UPPER(customer_name)` keeps the model on Direct Lake, which
-refreshes with no credentials to bind.
+Compute such a field in a view over the source table instead. Every platform then reads
+the same value, which is the point of a shared semantic model - a per-dialect
+expression that differs between platforms means the field means something different
+depending on where you ask.
 
 ### Direct Lake, and why the lakehouse id matters
 

@@ -239,16 +239,6 @@ class FabricApi:
     def delete_item(self, workspace, item, token):
         return _delete_item(workspace, item, token)
 
-    def lakehouse(self, workspace, lakehouse, token):
-        status, body, _ = request(
-            "GET", f"{FABRIC_API}/workspaces/{workspace}/lakehouses/{lakehouse}", token
-        )
-        if status != 200:
-            raise FabricError(
-                f"could not read lakehouse {lakehouse}: {request_failure(status, body)}"
-            )
-        return body
-
     def list_models(self, workspace, token):
         url = f"{FABRIC_API}/workspaces/{workspace}/semanticModels"
         names = []

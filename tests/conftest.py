@@ -22,13 +22,6 @@ class FakeFabricApi:
     lakehouses = [{"id": "22222222-2222-2222-2222-222222222222",
                    "displayName": "raw", "type": "Lakehouse"}]
 
-    def lakehouse(self, workspace, lakehouse, token):
-        self.calls.append(("lakehouse", lakehouse))
-        return {"properties": {"sqlEndpointProperties": {
-            "connectionString": "fake.datawarehouse.fabric.microsoft.com",
-            "id": "513b18e7-0000-0000-0000-000000000000",
-            "provisioningStatus": "Success"}}}
-
     def list_models(self, workspace, token):
         self.calls.append(("list_models",))
         return sorted(self.items)
