@@ -146,6 +146,20 @@ class Databricks:
         )
         return write_model(ossie_yaml, out)
 
+    def compare(self, model, *, name: str | None = None):
+        """Would uploading `model` change anything? Returns a `Comparison`."""
+        import yaml
+
+        from ._compare import compare
+
+        ossie_yaml = read_model(model)
+        name = name or model_name(ossie_yaml)
+        local = yaml.safe_load(self.to_metric_view(ossie_yaml))
+        if name not in self.list_models():
+            return compare(name, local, None)
+        remote = yaml.safe_load(self._read_definition(f"{self.catalog}.{self.schema}.{name}"))
+        return compare(name, local, remote)
+
     def list_models(self) -> list[str]:
         """The names of the Metric Views in this catalog and schema."""
         views = self.client.tables.list(catalog_name=self.catalog, schema_name=self.schema)

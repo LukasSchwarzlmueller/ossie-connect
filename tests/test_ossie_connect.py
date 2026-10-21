@@ -646,6 +646,66 @@ def test_java_download_labels_expressions_with_the_portable_dialect(databricks_j
     assert dialects == {"OSSIE_SQL_2026"}
 
 
+# --- comparing with what is deployed ---------------------------------------------
+
+@pytest.mark.parametrize("name", ["fabric", "databricks", "databricks_java"])
+def test_compare_says_new_then_same_then_changed(name, request):
+    connection = request.getfixturevalue(name)
+    assert connection.compare(MODEL).status == "new"
+    connection.upload(MODEL)
+    assert connection.compare(MODEL).status == "same"
+    edited = MODEL.read_text().replace("Total revenue across all orders", "Revenue")
+    result = connection.compare(Yaml(edited))
+    assert result.status == "changed"
+    assert "Revenue" in result.diff and result.name == "sales_demo"
+
+
+def test_cli_diff_exits_non_zero_when_something_would_change(monkeypatch, capsys,
+                                                               fabric_api):
+    from ossie_connect import cli
+
+    monkeypatch.setattr(cli, "_connect", lambda args: Fabric(
+        workspace=WORKSPACE, token="t", api=fabric_api))
+    assert cli.main(["diff", "fabric", str(MODEL)]) == 1
+    assert capsys.readouterr().out.split() == ["new", "sales_demo"]
+    cli.main(["upload", "fabric", str(MODEL)])
+    capsys.readouterr()
+    assert cli.main(["diff", "fabric", str(MODEL)]) == 0
+    assert capsys.readouterr().out.split() == ["same", "sales_demo"]
+
+
+def _cli_on(monkeypatch, connection):
+    from ossie_connect import cli
+
+    monkeypatch.setattr(cli, "_connect", lambda args: connection)
+    return cli.main
+
+
+def test_cli_upload_only_changed_skips_what_is_deployed(monkeypatch, capsys, fabric_api):
+    main = _cli_on(monkeypatch, Fabric(workspace=WORKSPACE, token="t", api=fabric_api))
+    assert main(["upload", "fabric", str(MODEL), "--only-changed"]) == 0
+    assert main(["upload", "fabric", str(MODEL), "--only-changed"]) == 0
+    assert "Unchanged" in capsys.readouterr().out
+    assert [c[0] for c in fabric_api.calls].count("create_item") == 1
+    assert "update_item" not in [c[0] for c in fabric_api.calls]
+
+
+def test_cli_prune_lists_first_and_deletes_only_with_yes(monkeypatch, capsys, tmp_path,
+                                                         fabric_api):
+    fabric = Fabric(workspace=WORKSPACE, token="t", api=fabric_api)
+    fabric.upload(MODEL)
+    fabric.upload(MODEL, name="old_model")
+    (tmp_path / "model.yaml").write_text(MODEL.read_text())
+    main = _cli_on(monkeypatch, fabric)
+
+    assert main(["prune", "fabric", str(tmp_path)]) == 0
+    assert "would delete old_model" in capsys.readouterr().out
+    assert sorted(fabric_api.items) == ["old_model", "sales_demo"]
+
+    assert main(["prune", "fabric", str(tmp_path), "--yes"]) == 0
+    assert sorted(fabric_api.items) == ["sales_demo"]
+
+
 # --- a folder of models ----------------------------------------------------------
 
 @pytest.fixture

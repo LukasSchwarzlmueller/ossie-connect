@@ -216,6 +216,21 @@ class Fabric:
         document.setdefault("name", name)
         return write_model(self._converter.to_ossie(document, warn=warn), out)
 
+    def compare(self, model, *, name: str | None = None):
+        """Would uploading `model` change anything? Returns a `Comparison`."""
+        from ._compare import compare
+
+        bim = self.to_tmsl(model)
+        name = name or bim.get("name")
+        item = self._api.find_item(self.workspace, name, self.token)
+        if not item:
+            return compare(name, bim, None)
+        remote = json.loads(self._api.get_definition(self.workspace, item, self.token))
+        # Fabric keeps the name on the item, not in the definition.
+        local = {k: v for k, v in bim.items() if k != "name"}
+        remote.pop("name", None)
+        return compare(name, local, remote)
+
     def list_models(self) -> list[str]:
         """The names of the semantic models in this workspace."""
         return self._api.list_models(self.workspace, self.token)

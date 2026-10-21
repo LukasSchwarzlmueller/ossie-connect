@@ -192,12 +192,20 @@ ossie-connect list     fabric                  # what is deployed there
 ossie-connect upload   fabric     model.yaml
 ossie-connect delete   fabric     sales_demo
 ossie-connect upload   fabric     models/              # every model in the folder
+ossie-connect diff     fabric     models/ --show       # new / changed / same, vs deployed
+ossie-connect upload   fabric     models/ --only-changed   # skip what is already deployed
+ossie-connect prune    fabric     models/              # list deployed models not in the folder
+ossie-connect prune    fabric     models/ --yes        # ...and delete them
 ossie-connect download fabric     sales_demo -o model.yaml
 ossie-connect upload   databricks model.yaml --dry-run
 ossie-connect download databricks sales_demo          # to stdout
 ```
 
-`list` names what is deployed, and `delete` removes one. `check` verifies the settings
+`list` names what is deployed, and `delete` removes one. `diff` says, per model, whether uploading would
+create it (`new`), change it (`changed`) or do nothing (`same`), and exits non-zero
+unless everything is `same` - so CI can ask whether a deploy is due. It compares in the
+platform's format (TMSL, Metric View YAML), not in Ossie, because the Ossie round trip
+is lossy and would always differ. `connection.compare(model)` is the same from Python. `check` verifies the settings
 describe something real and writes nothing, exiting
 non-zero on an error. `check` is the only command that contacts the platform without
 creating anything - `--dry-run` proves the conversion but talks to nobody, so it cannot

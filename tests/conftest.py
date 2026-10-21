@@ -59,8 +59,9 @@ class FakeFabricApi:
         self.calls.append(("create_item", name))
         self.folders[name] = folder
         self.items[name] = json.dumps(bim)
-        self.ids[name] = ITEM
-        return ITEM
+        # The first item keeps the well-known ITEM id; later ones get their own.
+        self.ids[name] = ITEM if ITEM not in self.ids.values() else f"item-{len(self.ids)}"
+        return self.ids[name]
 
     def update_item(self, workspace, item, bim, token):
         self.calls.append(("update_item", item))
@@ -99,6 +100,12 @@ class FakeDatabricksClient:
     class _Tables:
         def __init__(self, outer):
             self.outer = outer
+
+        def list(self, catalog_name, schema_name):
+            prefix = f"{catalog_name}.{schema_name}."
+            return [type("TableInfo", (), {"name": n[len(prefix):],
+                                           "table_type": "METRIC_VIEW"})()
+                    for n in self.outer.views if n.startswith(prefix)]
 
         def get(self, full_name):
             if full_name not in self.outer.views:

@@ -50,8 +50,21 @@ def _build_parser():
     up.add_argument(
         "--dry-run", action="store_true", help="print what would be sent, connect to nothing"
     )
+    up.add_argument("--only-changed", action="store_true",
+                    help="skip models the platform already holds unchanged (see diff)")
 
     sub.add_parser("list", parents=[common], help="what is deployed where this points")
+
+    cmp = sub.add_parser("diff", parents=[common],
+                         help="compare local models with what is deployed; writes nothing")
+    cmp.add_argument("model", help="Ossie YAML file, or a folder of them")
+    cmp.add_argument("--show", action="store_true", help="print the differences")
+
+    pr = sub.add_parser("prune", parents=[common],
+                        help="remove deployed models with no file in the folder")
+    pr.add_argument("model", help="folder of Ossie models to keep")
+    pr.add_argument("--yes", action="store_true",
+                    help="actually delete; without it, only list what would go")
 
     rm = sub.add_parser("delete", parents=[common], help="remove a deployed model")
     rm.add_argument("name", help="name of the model to remove")
@@ -136,6 +149,15 @@ def _upload(connection, targets, args) -> int:
     """
     failed = []
     for index, (_name, path) in enumerate(targets):
+        if args.only_changed and not args.dry_run:
+            try:
+                if connection.compare(path, name=_name or args.name).status == "same":
+                    print(f"Unchanged {path}")
+                    continue
+            except AttributeError:
+                print(f"Error: {args.target} cannot be read back, so --only-changed "
+                      "cannot tell what changed", file=sys.stderr)
+                return 1
         if args.dry_run:
             if index:
                 print()
@@ -182,6 +204,37 @@ def main(argv=None) -> int:
                 print(name)
             if not names:
                 print(f"nothing deployed in {connection.target}", file=sys.stderr)
+            return 0
+
+        if args.command == "diff":
+            if not hasattr(connection, "compare"):
+                print(f"Error: {args.target} cannot be read back, so cannot be compared",
+                      file=sys.stderr)
+                return 1
+            changed = 0
+            for name, path in _models(args.model):
+                result = connection.compare(path, name=name)
+                changed += result.status != "same"
+                print(f"{result.status:8} {result.name}")
+                if args.show and result.diff:
+                    print(result.diff)
+            return 1 if changed else 0
+
+        if args.command == "prune":
+            keep = {name for name, _path in _models(args.model)}
+            if keep == {None}:
+                print("Error: prune takes a folder, not a single file", file=sys.stderr)
+                return 1
+            extra = [n for n in connection.list_models() if n not in keep]
+            for name in extra:
+                if args.yes:
+                    connection.delete(name)
+                    print(f"Deleted {name} from {connection.target}")
+                else:
+                    print(f"would delete {name}")
+            if extra and not args.yes:
+                print("nothing deleted - pass --yes to delete these. A workspace can hold "
+                      "models not made from Ossie; check the list first.", file=sys.stderr)
             return 0
 
         if args.command == "delete":
