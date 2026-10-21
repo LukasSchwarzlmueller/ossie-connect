@@ -1,14 +1,28 @@
 """Fakes standing in for the two platforms."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
+
+from ossie_connect._java import find_jar
 
 MODEL = Path(__file__).parent / "data" / "model.yaml"
 WORKSPACE = "11111111-1111-1111-1111-111111111111"
 LAKEHOUSE = "22222222-2222-2222-2222-222222222222"
 ITEM = "33333333-3333-3333-3333-333333333333"
+
+# The Java converter, if this machine has one: read before any test isolates the env.
+# Databricks tests run against it as well as the Python converter when it is here.
+REAL_JAR = find_jar() if shutil.which("java") else None
+
+
+@pytest.fixture(autouse=True)
+def _no_converter_jar_from_the_machine(monkeypatch, tmp_path_factory):
+    """Which Databricks converter is the default depends on the machine; pin it."""
+    monkeypatch.delenv("OSSIE_DATABRICKS_JAR", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
 
 
 class FakeFabricApi:
@@ -18,6 +32,7 @@ class FakeFabricApi:
         self.items = dict(items or {})          # name -> model.bim text
         self.ids = {name: ITEM for name in self.items}
         self.calls = []
+        self.folders = {}                       # name -> folder id it was created in
 
     lakehouses = [{"id": "22222222-2222-2222-2222-222222222222",
                    "displayName": "raw", "type": "Lakehouse"}]
@@ -40,8 +55,9 @@ class FakeFabricApi:
         self.calls.append(("find_item", name))
         return self.ids.get(name)
 
-    def create_item(self, workspace, name, bim, token):
+    def create_item(self, workspace, name, bim, token, folder=None):
         self.calls.append(("create_item", name))
+        self.folders[name] = folder
         self.items[name] = json.dumps(bim)
         self.ids[name] = ITEM
         return ITEM

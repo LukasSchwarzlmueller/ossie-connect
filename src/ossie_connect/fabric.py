@@ -28,7 +28,11 @@ class Fabric:
     The lakehouse must already hold the tables the model names, under `schema`.
 
     `token` defaults to the Azure CLI (`az account get-access-token`), so nothing secret
-    needs storing; set FABRIC_TOKEN to override that with a token from elsewhere.
+    needs storing; set FABRIC_TOKEN to override that with a token from elsewhere. On
+    WSL the Windows `az` is tried too, for tenants that only accept a managed device.
+
+    `folder` is a workspace folder id. A new model is created in it; a model that
+    already exists stays where it is, since only its definition is replaced.
 
     `api` and `converter` exist to be replaced in tests, and to leave room for a
     different converter implementation later.
@@ -43,6 +47,7 @@ class Fabric:
         lakehouse: str | None = None,
         lakehouse_workspace: str | None = None,
         schema: str = "dbo",
+        folder: str | None = None,
         token: str | None = None,
         api=None,
         converter=None,
@@ -53,6 +58,7 @@ class Fabric:
         self.lakehouse = lakehouse
         self.lakehouse_workspace = lakehouse_workspace or workspace
         self.schema = schema
+        self.folder = folder
         self._token = token
         self._api = api or FabricApi()
         self._lock = threading.Lock()
@@ -67,6 +73,7 @@ class Fabric:
             "lakehouse": os.environ.get("FABRIC_LAKEHOUSE_ID"),
             "lakehouse_workspace": os.environ.get("FABRIC_LAKEHOUSE_WORKSPACE_ID"),
             "schema": os.environ.get("FABRIC_SCHEMA", "dbo"),
+            "folder": os.environ.get("FABRIC_FOLDER_ID") or None,
         }
         values.update({k: v for k, v in overrides.items() if v is not None})
         if not values["workspace"]:
@@ -75,7 +82,7 @@ class Fabric:
 
     def at(self, workspace: str | None = None, lakehouse: str | None = None,
            lakehouse_workspace: str | None = None,
-           schema: str | None = None) -> "Fabric":
+           schema: str | None = None, folder: str | None = None) -> "Fabric":
         """The same credential, pointed at a different workspace or lakehouse.
 
         The token is shared rather than re-acquired, so several targets in one script
@@ -88,6 +95,7 @@ class Fabric:
                 self.lakehouse_workspace if workspace is None else workspace
             ),
             schema=schema or self.schema,
+            folder=folder or (self.folder if workspace is None else None),
             token=self._token,
             api=self._api,
             converter=self._converter,
@@ -182,7 +190,8 @@ class Fabric:
         if item:
             self._api.update_item(self.workspace, item, bim, self.token)
             return item
-        return self._api.create_item(self.workspace, name, bim, self.token)
+        return self._api.create_item(self.workspace, name, bim, self.token,
+                                     folder=self.folder)
 
     def download(self, name: str, out=None, *, item: str | None = None,
                  warn: bool = False) -> str:

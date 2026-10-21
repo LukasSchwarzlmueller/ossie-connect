@@ -7,6 +7,7 @@
     ossie-connect download fabric     sales_demo -o model.yaml
     ossie-connect upload   databricks model.yaml
     ossie-connect download databricks sales_demo -o model.yaml
+    ossie-connect build-databricks-converter
 
 Connection settings come from the environment (and a .env file beside you, if there is
 one); every one of them can be overridden with a flag. --dry-run prints what would be
@@ -37,6 +38,7 @@ def _build_parser():
     common.add_argument("--warnings", action="store_true", help="show conversion warnings")
     common.add_argument("--workspace", help="Fabric workspace id")
     common.add_argument("--lakehouse", help="Fabric lakehouse item id")
+    common.add_argument("--folder", help="Fabric workspace folder id, for new models")
     common.add_argument("--schema", help="Fabric schema, or Databricks schema")
     common.add_argument("--catalog", help="Databricks catalog")
     common.add_argument("--warehouse-id", help="Databricks SQL warehouse id")
@@ -64,6 +66,12 @@ def _build_parser():
     down = sub.add_parser("download", parents=[common], help="platform -> Ossie file")
     down.add_argument("name", help="name of the model to download")
     down.add_argument("-o", "--output", help="write the Ossie YAML here (default: stdout)")
+
+    build = sub.add_parser(
+        "build-databricks-converter",
+        help="build upstream's Java Databricks converter (needs git, JDK 21+, Maven)",
+    )
+    build.add_argument("--force", action="store_true", help="rebuild even if already built")
     return parser
 
 
@@ -89,7 +97,8 @@ def _connect(args) -> "Connection":
         from .fabric import Fabric
 
         return Fabric.from_env(
-            workspace=args.workspace, lakehouse=args.lakehouse, schema=args.schema
+            workspace=args.workspace, lakehouse=args.lakehouse, schema=args.schema,
+            folder=args.folder,
         )
     if args.target == "snowflake":
         from .snowflake import Snowflake
@@ -100,6 +109,23 @@ def _connect(args) -> "Connection":
     return Databricks.from_env(
         catalog=args.catalog, schema=args.schema, warehouse_id=args.warehouse_id
     )
+
+
+def _build_databricks_converter(force: bool = False) -> int:
+    import subprocess
+
+    from ._java import JAR_ENV, build_jar, find_jar
+
+    try:
+        jar = build_jar(log=lambda line: print(line, file=sys.stderr), force=force)
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Converter jar: {jar}")
+    if find_jar() != jar:
+        print(f"note: {JAR_ENV} is set, so that jar is used instead of this one",
+              file=sys.stderr)
+    return 0
 
 
 def _upload(connection, targets, args) -> int:
@@ -145,6 +171,8 @@ def main(argv=None) -> int:
 
     load_env()
     plain_warnings()
+    if args.command == "build-databricks-converter":
+        return _build_databricks_converter(force=args.force)
     try:
         connection = _connect(args)
 

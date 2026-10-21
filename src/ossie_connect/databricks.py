@@ -6,7 +6,7 @@ import threading
 import warnings
 
 from ._convert import OssieConnectWarning
-from ._converters import DatabricksConverter
+from ._converters import DatabricksConverter, default_databricks_converter
 from ._io import read_model, write_model
 from ._model import drop_duplicate_join_keys, model_name, qualify_sources
 from .preflight import Finding
@@ -28,9 +28,12 @@ class Databricks:
     reads the definition straight from Unity Catalog.
 
     Authentication is the Databricks SDK's own: environment variables (DATABRICKS_HOST,
-    DATABRICKS_TOKEN) or a profile in ~/.databrickscfg. `client` and `converter` exist
-    to be replaced in tests, and to leave room for the Java converter upstream now
-    maintains in place of the Python one this uses.
+    DATABRICKS_TOKEN) or a profile in ~/.databrickscfg.
+
+    Conversion uses upstream's Java converter when its jar is found (built by
+    `ossie-connect build-databricks-converter`, or named by OSSIE_DATABRICKS_JAR), and
+    the deprecated Python converter otherwise. `client` and `converter` exist to be
+    replaced in tests.
     """
 
     platform = "Databricks"
@@ -50,7 +53,7 @@ class Databricks:
         self.schema = schema
         self.warehouse_id = warehouse_id
         self._client = client
-        self._converter = converter or DatabricksConverter()
+        self._converter = converter or default_databricks_converter()
         self._lock = threading.Lock()
 
     @classmethod
@@ -102,6 +105,12 @@ class Databricks:
     def check(self) -> list[Finding]:
         """Verify the catalog and schema exist, without changing anything."""
         findings = []
+        if isinstance(self._converter, DatabricksConverter):
+            findings.append(Finding(
+                "warning",
+                "using the deprecated Python converter, which upstream removed; run "
+                "`ossie-connect build-databricks-converter` for the maintained Java one",
+            ))
         if not self.warehouse_id:
             findings.append(Finding(
                 "warning",

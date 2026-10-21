@@ -48,6 +48,9 @@ Microsoft converter does not — pure asymmetry.
 
 *Delete when* `convert_semantic_model_to_ossie` accepts a name.
 
+Re-checked after upstream split into `apache/ossie` and `apache/ossie-converters`
+(2026-10-21): all three are still needed at the pinned commit and at upstream's latest.
+
 ## Ours by choice, and worth revisiting
 
 An import-mode deployment used to live here, generating T-SQL from a field's Ossie
@@ -83,10 +86,10 @@ string. Noted because it still edits the model.
 
 Reproduced while building this; no code here depends on them.
 
-- **`ossie-databricks` drops silently.** `datatype`, `label`, field and metric
-  `ai_context`, and every non-`DATABRICKS` dialect vanish with no warning, while
-  `dimension.is_time` and dataset descriptions *are* reported. The reporting machinery
-  exists and is not used on those paths.
+- **The Python `ossie-databricks` drops silently.** `datatype`, `label`, field and
+  metric `ai_context`, and every non-`DATABRICKS` dialect vanish with no warning. Fixed
+  by moving on: upstream removed that converter, and the Java one `Databricks` now uses
+  by default reports every drop. Only the fallback still behaves this way.
 - **`ossie-dbt` has four bugs**, all still present at the pinned commit and all
   reported as zero issues by the converter: `order_count` attaches to the wrong
   semantic model, `COUNT(*)` becomes `expr: '*'` which compiles to invalid SQL,

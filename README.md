@@ -20,6 +20,16 @@ packages and 36 MB becomes 36 packages and 80 MB. Fabric talks to the REST API o
 `urllib` and needs nothing, and `databricks-sdk` is small, so neither is worth making
 optional.
 
+For Databricks, build upstream's Java converter once (needs git, JDK 21+ and Maven):
+
+```bash
+ossie-connect build-databricks-converter   # -> ~/.cache/ossie-connect/
+```
+
+Without it, Databricks still works on the Python converter, which upstream has removed
+and no longer fixes; `ossie-connect check databricks` says which one is in use. See
+[The Databricks converter](#the-databricks-converter).
+
 ## Python
 
 Define a connection once, then move files across it.
@@ -211,17 +221,28 @@ a flag that overrides it. Add `--warnings` to see what a conversion could not ca
 | `FABRIC_LAKEHOUSE_ID` | Fabric | lakehouse item id; see Direct Lake below |
 | `FABRIC_LAKEHOUSE_WORKSPACE_ID` | Fabric | only if the lakehouse is in another workspace |
 | `FABRIC_SCHEMA` | Fabric | default `dbo` |
+| `FABRIC_FOLDER_ID` | Fabric | optional; workspace folder a *new* model is created in |
 | `FABRIC_TOKEN` | Fabric | overrides the Azure CLI |
 | `DATABRICKS_CATALOG` / `DATABRICKS_SCHEMA` | Databricks | where the Metric View is created |
 | `DATABRICKS_WAREHOUSE_ID` | Databricks | SQL warehouse; needed to upload, not to download |
 | `DATABRICKS_HOST` / `DATABRICKS_TOKEN` | Databricks | read by the Databricks SDK itself |
+| `OSSIE_DATABRICKS_JAR` | Databricks | optional; a Java converter jar of your own, instead of the built one |
 | `SNOWFLAKE_DATABASE` / `SNOWFLAKE_SCHEMA` | Snowflake | where the Semantic View is created |
 | `SNOWFLAKE_ACCOUNT` / `SNOWFLAKE_USER` / `SNOWFLAKE_PASSWORD` | Snowflake | account auth |
 | `SNOWFLAKE_ROLE` | Snowflake | optional; falls back to your default role |
 | `SNOWFLAKE_WAREHOUSE` | Snowflake | optional; default `OSSIE_COMPUTE_WH`, created if missing |
 
 Fabric authenticates with the Azure CLI by default - run `az login` and no secret needs
-storing. Databricks uses the SDK's own resolution: environment variables or a profile in
+storing. On WSL the Windows `az` is tried after the Linux one, through `powershell.exe`.
+That matters for tenants with a device-compliance policy: they refuse the Linux login
+(`AADSTS530033`) because only the Windows host is a managed device, so log in from
+Windows PowerShell instead (`az login --tenant <tenant> --allow-no-subscriptions`).
+
+`FABRIC_FOLDER_ID` (or `folder=`, or `--folder`) only places a model when it is first
+created. Re-uploading replaces the definition and leaves the item in whatever folder it
+is in, and `at(workspace=...)` drops the folder, since its id belongs to one workspace.
+
+Databricks uses the SDK's own resolution: environment variables or a profile in
 `~/.databrickscfg`.
 
 ## What happens on each platform
@@ -330,8 +351,13 @@ more than a Metric View can express. Measured against a real workspace, what sur
 | `ANSI_SQL`, `DAX`, `SNOWFLAKE` dialects | **no** - a Metric View holds one expression |
 | dataset-level `description` | **no** - only one top-level comment exists |
 
-Only `is_time`, the dataset descriptions and the join-key change are reported; the rest
-goes quietly. `warn=True` shows what is reported.
+With the Java converter every one of these is reported; the Python one reports only
+`is_time`, the dataset descriptions and the join-key change. `warn=True` shows them.
+
+The dialect comes back relabelled with the Java converter: an expression that fits
+Ossie's portable language returns as `OSSIE_SQL_2026` rather than `DATABRICKS`. Fabric
+and Snowflake both read that dialect, so a model downloaded from Databricks uploads to
+them without editing.
 
 Two structural changes are worth expecting. The fact dataset is renamed after the model,
 since a Metric View's YAML carries no model name of its own - `source` is untouched, so
@@ -369,8 +395,9 @@ Pass `warn=True` (or `--warnings`) and every one of these is reported as it happ
 | Snowflake | yes | not possible | **yes** - deploys, and the Semantic View returns the same numbers |
 | Fabric | yes | yes | **yes** - deploys, stores what was sent, and its DAX compiles and evaluates |
 
-133 tests run against in-memory fakes, covering conversion, request shapes,
-long-running operations, preflight and the CLI. A separate repository runs the live
+170 tests run against in-memory fakes, covering conversion, request shapes,
+long-running operations, preflight and the CLI. The Databricks ones run on both
+converters, the Java one only where its jar is built - CI builds it. A separate repository runs the live
 tests: it seeds tables on Databricks and Snowflake and asserts the deployed semantic
 layer computes the expected figures, and on Fabric it reads the deployed TMSL back and
 checks the measures, relationships and partitions are the ones it sent.
@@ -384,20 +411,52 @@ Not yet verified: a Fabric model reading **real rows**. Evaluating measures uses
 sample data, so the figures are not the demo figures; asserting those needs a lakehouse
 holding the tables, which Databricks and Snowflake both cover instead.
 
-## Dependencies, and a change coming
+## The Databricks converter
 
-The converters are pinned to one upstream commit rather than tracked. Two things make a
-bump non-trivial:
+Upstream maintains the Databricks converter in Java, in `apache/ossie-converters`, and
+removed the Python one. `Databricks` uses the Java one whenever it finds a jar:
+`OSSIE_DATABRICKS_JAR` if set, else the one `ossie-connect build-databricks-converter`
+built for the pinned commit. It runs as `java -jar … export` / `import`: measured on the
+test model, 0.16 s a conversion against 0.015 s for the Python one, almost all of it the
+JVM starting - small beside the upload itself.
 
-- **Upstream now maintains the Databricks converter in Java.** `converters/databricks`
-  has split into `java/` and `python/`; the Java one is "the maintained implementation"
-  and the Python one this package uses is "to be deprecated". The path change alone
-  breaks the pin. Conversion is kept behind `_converters.DatabricksConverter`, so moving
-  to the Java CLI means implementing its two methods and passing
-  `Databricks(converter=...)` - the connection does not change.
+Measured on the test model, the two write the same Metric View once parsed - only the
+YAML quoting differs. They differ in what they report and in the dialect a download is
+labelled with, both described under the round trip above. The duplicate join key is a
+Metric View rule rather than a converter bug, so the Java converter needs it
+deduplicated too.
+
+Pass `Databricks(converter=...)` to choose explicitly:
+
+```python
+from ossie_connect._java import JavaDatabricksConverter
+Databricks(catalog="main", schema="sales", converter=JavaDatabricksConverter("my.jar"))
+```
+
+## Dependencies
+
+The converters are pinned to one upstream commit rather than tracked. On 2026-10-21
+upstream split in two: `apache/ossie` keeps the spec and the core package, and every
+converter moved to the top level of
+[`apache/ossie-converters`](https://github.com/apache/ossie-converters), which carries
+`apache/ossie` as its `ossie/` submodule. Microsoft, Snowflake and the core package are
+pinned to one `ossie-converters` commit, core coming from that submodule so the pair is
+the one upstream tests together. Re-pinning changed no converter output for the test
+model, byte for byte.
+
+The Java Databricks converter is built at that same commit (`_java.CONVERTERS_REV`; a
+test keeps the two equal). The Python fallback was removed upstream before the split, so
+it stays on an old `apache/ossie` commit; it depends only on `pyyaml`, so it does not
+conflict with the newer core.
+
+Things to know before a bump:
 - **`_fabric_api` reuses three private helpers of `ossie_microsoft.engine`** for the
   HTTP layer, documented at the top of that module. A bump could rename them; the tests
-  exercise all three.
+  exercise all three. They are unchanged at upstream's latest commit.
+- **Upstream's latest adds `translate_dax`** to `convert_semantic_model_to_ossie`
+  (opt-in): a single-column DAX aggregate measure comes back with an `OSSIE_SQL_2026`
+  expression too. It would make a Fabric download portable the way a Java Databricks
+  download already is. Not used yet - it is not in the pinned commit.
 
 ## Licence
 

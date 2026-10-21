@@ -18,7 +18,7 @@ classifiers = [
 # including a models repo depending on this by git URL. Direct references do travel.
 # They also mean this package cannot be uploaded to PyPI until the converters are.
 dependencies = [
-    "apache-ossie-microsoft @ git+https://github.com/apache/ossie@a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c#subdirectory=converters/microsoft",
+    "apache-ossie-microsoft @ git+https://github.com/apache/ossie-converters@853c52986cd03508fe233fbab8c4213890943095#subdirectory=microsoft",
     "apache-ossie-databricks @ git+https://github.com/apache/ossie@a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c#subdirectory=converters/databricks",
     "databricks-sdk>=0.133.0",
     "pyyaml",
@@ -27,7 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 # Snowflake is optional: its connector is heavy and the Snowflake path is upload-only.
 snowflake = [
-    "apache-ossie-snowflake @ git+https://github.com/apache/ossie@a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c#subdirectory=converters/snowflake",
+    "apache-ossie-snowflake @ git+https://github.com/apache/ossie-converters@853c52986cd03508fe233fbab8c4213890943095#subdirectory=snowflake",
     "snowflake-connector-python>=4.7.2",
 ]
 
@@ -49,18 +49,21 @@ packages = ["src/ossie_connect"]
 artifacts = ["src/ossie_connect/py.typed"]
 
 [tool.uv.sources]
-# Pinned, not floating. Two reasons it cannot simply be bumped:
-#  - converters/databricks has since split into java/ and python/ subdirectories, so on
-#    main the subdirectory below is `converters/databricks/python`. Upstream calls the
-#    Java one "the maintained implementation" and the Python one "to be deprecated";
-#    when that matters, implement the two methods of _converters.DatabricksConverter
-#    against the Java CLI and pass it as Databricks(converter=...).
+# Pinned, not floating. Upstream split into two repos on 2026-10-21: apache/ossie keeps
+# the spec and core package, apache/ossie-converters holds one top-level folder per
+# converter and carries apache/ossie as its `ossie/` submodule. Core comes from that
+# submodule, so one ossie-converters rev bumps core and converters together, to the pair
+# upstream tests. Two reasons the pins cannot simply be bumped:
+#  - The Java Databricks converter is built from this same rev (_java.CONVERTERS_REV,
+#    kept equal by a test), so a bump changes both. The Python Databricks converter,
+#    now only the fallback when no jar is built, was removed upstream before the split
+#    and stays on an old apache/ossie commit (it depends only on pyyaml, so no conflict).
 #  - _fabric_api reuses three private helpers of ossie_microsoft.engine, which a bump
 #    could rename. tests/test_ossie_connect.py exercises all three.
-apache-ossie = { git = "https://github.com/apache/ossie", subdirectory = "python", rev = "a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
-apache-ossie-microsoft = { git = "https://github.com/apache/ossie", subdirectory = "converters/microsoft", rev = "a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
+apache-ossie = { git = "https://github.com/apache/ossie-converters", subdirectory = "ossie/python", rev = "853c52986cd03508fe233fbab8c4213890943095" }
+apache-ossie-microsoft = { git = "https://github.com/apache/ossie-converters", subdirectory = "microsoft", rev = "853c52986cd03508fe233fbab8c4213890943095" }
 apache-ossie-databricks = { git = "https://github.com/apache/ossie", subdirectory = "converters/databricks", rev = "a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
-apache-ossie-snowflake = { git = "https://github.com/apache/ossie", subdirectory = "converters/snowflake", rev = "a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
+apache-ossie-snowflake = { git = "https://github.com/apache/ossie-converters", subdirectory = "snowflake", rev = "853c52986cd03508fe233fbab8c4213890943095" }
 
 [dependency-groups]
 dev = ["pytest>=8"]

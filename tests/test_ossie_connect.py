@@ -15,7 +15,7 @@ import warnings
 import pytest
 import yaml
 
-from conftest import ITEM, LAKEHOUSE, MODEL, WORKSPACE, FakeDatabricksClient
+from conftest import ITEM, LAKEHOUSE, MODEL, REAL_JAR, WORKSPACE, FakeDatabricksClient
 from ossie_connect import (
     Connection,
     Databricks,
@@ -52,8 +52,24 @@ def snowflake(snowflake_connection):
 
 @pytest.fixture
 def databricks(databricks_client):
+    from ossie_connect._converters import DatabricksConverter
+
     return Databricks(
-        catalog="main", schema="sales", warehouse_id="w", client=databricks_client
+        catalog="main", schema="sales", warehouse_id="w", client=databricks_client,
+        converter=DatabricksConverter(),
+    )
+
+
+@pytest.fixture
+def databricks_java(databricks_client):
+    """The same, on upstream's Java converter; skipped where it is not built."""
+    from ossie_connect._java import JavaDatabricksConverter
+
+    if REAL_JAR is None:
+        pytest.skip("no Java converter - run ossie-connect build-databricks-converter")
+    return Databricks(
+        catalog="main", schema="sales", warehouse_id="w", client=databricks_client,
+        converter=JavaDatabricksConverter(REAL_JAR),
     )
 
 
@@ -67,14 +83,14 @@ def test_connections_declare_only_what_they_can_do(fabric, databricks, snowflake
     assert not isinstance(snowflake, Connection)
 
 
-@pytest.mark.parametrize("name", ["fabric", "databricks", "snowflake"])
+@pytest.mark.parametrize("name", ["fabric", "databricks", "databricks_java", "snowflake"])
 def test_preview_returns_text_and_touches_no_network(name, request):
     connection = request.getfixturevalue(name)
     preview = connection.preview(MODEL)
     assert isinstance(preview, str) and preview.strip()
 
 
-@pytest.mark.parametrize("name", ["fabric", "databricks", "snowflake"])
+@pytest.mark.parametrize("name", ["fabric", "databricks", "databricks_java", "snowflake"])
 def test_upload_is_idempotent(name, request):
     connection = request.getfixturevalue(name)
     first = connection.upload(MODEL)
@@ -82,7 +98,7 @@ def test_upload_is_idempotent(name, request):
     assert first == second
 
 
-@pytest.mark.parametrize("name", ["fabric", "databricks"])
+@pytest.mark.parametrize("name", ["fabric", "databricks", "databricks_java"])
 def test_upload_then_download_returns_an_ossie_document(name, request, tmp_path):
     connection = request.getfixturevalue(name)
     connection.upload(MODEL)
@@ -92,7 +108,7 @@ def test_upload_then_download_returns_an_ossie_document(name, request, tmp_path)
     assert out.read_text() == returned
 
 
-@pytest.mark.parametrize("name", ["fabric", "databricks", "snowflake"])
+@pytest.mark.parametrize("name", ["fabric", "databricks", "databricks_java", "snowflake"])
 def test_every_connection_accepts_yaml_text_as_well_as_a_path(name, request):
     connection = request.getfixturevalue(name)
     assert connection.preview(Yaml(MODEL.read_text())) == connection.preview(MODEL)
@@ -254,6 +270,99 @@ def test_fabric_acquires_a_token_only_when_none_was_given(fabric_api):
     assert ("acquire_token",) in fabric_api.calls
 
 
+def test_fabric_creates_a_new_model_in_the_folder(fabric_api):
+    Fabric(workspace=WORKSPACE, token="t", api=fabric_api, folder="f1").upload(MODEL)
+    assert fabric_api.folders == {"sales_demo": "f1"}
+
+
+def test_fabric_folder_comes_from_the_env_and_follows_at(monkeypatch):
+    monkeypatch.setenv("FABRIC_WORKSPACE_ID", WORKSPACE)
+    monkeypatch.setenv("FABRIC_FOLDER_ID", "f1")
+    fabric = Fabric.from_env()
+    assert fabric.folder == "f1"
+    assert fabric.at(schema="other").folder == "f1"
+    # A folder id belongs to one workspace, so it does not follow a move to another.
+    assert fabric.at(workspace="elsewhere").folder is None
+
+
+def test_fabric_create_sends_folder_id_only_when_set(monkeypatch):
+    from ossie_connect import _fabric_api
+
+    sent = []
+
+    def fake_request(method, url, token, payload=None):
+        sent.append(payload)
+        return 201, {"id": ITEM}, {}
+
+    monkeypatch.setattr(_fabric_api, "request", fake_request)
+    _fabric_api._create_item(WORKSPACE, "m", {"model": {}}, "t")
+    _fabric_api._create_item(WORKSPACE, "m", {"model": {}}, "t", folder="f1")
+    assert "folderId" not in sent[0]
+    assert sent[1]["folderId"] == "f1"
+
+
+# --- Fabric tokens from the Azure CLI ---------------------------------------------
+
+def _fake_az(monkeypatch, on_path, answers):
+    """Put the named CLIs on PATH; each answers (returncode, stdout, stderr)."""
+    from ossie_connect import _fabric_api
+
+    monkeypatch.delenv("FABRIC_TOKEN", raising=False)
+    monkeypatch.setattr(_fabric_api.shutil, "which",
+                        lambda name: f"/bin/{name}" if name in on_path else None)
+    ran = []
+
+    def fake_run(argv, **kwargs):
+        ran.append(argv[0])
+        code, out, err = answers[argv[0]]
+        return subprocess.CompletedProcess(argv, code, out, err)
+
+    monkeypatch.setattr(_fabric_api.subprocess, "run", fake_run)
+    return ran
+
+
+def test_token_comes_from_the_linux_az_first(monkeypatch):
+    from ossie_connect._fabric_api import acquire_token
+
+    ran = _fake_az(monkeypatch, {"az", "powershell.exe"},
+                   {"az": (0, "eyJlinux\n", ""), "powershell.exe": (0, "eyJwin", "")})
+    assert acquire_token() == "eyJlinux"
+    assert ran == ["az"]
+
+
+def test_token_falls_back_to_the_windows_az_on_wsl(monkeypatch):
+    """A device-compliance policy refuses the Linux login; the Windows host passes."""
+    from ossie_connect._fabric_api import acquire_token
+
+    ran = _fake_az(monkeypatch, {"az", "powershell.exe"}, {
+        "az": (1, "", "AADSTS530033: device is not compliant"),
+        "powershell.exe": (0, "eyJwin\r\n", ""),
+    })
+    assert acquire_token() == "eyJwin"
+    assert ran == ["az", "powershell.exe"]
+
+
+def test_token_failure_names_every_az_tried(monkeypatch):
+    from ossie_connect._fabric_api import acquire_token
+
+    _fake_az(monkeypatch, {"az", "powershell.exe"}, {
+        "az": (1, "", "AADSTS530033: device is not compliant"),
+        "powershell.exe": (1, "", "Please run 'az login' to setup account."),
+    })
+    with pytest.raises(FabricError) as exc:
+        acquire_token()
+    assert "az: AADSTS530033" in str(exc.value)
+    assert "Windows az: Please run 'az login'" in str(exc.value)
+
+
+def test_token_without_any_az_says_what_to_do(monkeypatch):
+    from ossie_connect._fabric_api import acquire_token
+
+    _fake_az(monkeypatch, set(), {})
+    with pytest.raises(FabricError, match="run `az login`, or set FABRIC_TOKEN"):
+        acquire_token()
+
+
 # --- Fabric transport (the real handlers, against recorded responses) -------------
 
 def test_fabric_get_definition_picks_the_model_bim_part(monkeypatch):
@@ -409,6 +518,132 @@ def test_a_replacement_converter_is_used_instead(databricks_client):
     assert "source: stub" in connection.preview(MODEL)
     connection.upload(MODEL)
     assert yaml.safe_load(connection.download("sales_demo"))["name"] == "from_stub"
+
+
+# --- the Java Databricks converter -----------------------------------------------
+
+needs_sh = pytest.mark.skipif(sys.platform == "win32", reason="fake java is a sh script")
+
+
+def _fake_java(tmp_path, code=0, stdout="", stderr=""):
+    """An executable standing in for `java`, answering with fixed output."""
+    (tmp_path / "out").write_text(stdout)
+    (tmp_path / "err").write_text(stderr)
+    script = tmp_path / "java"
+    script.write_text(
+        f"#!/bin/sh\ncat '{tmp_path / 'out'}'\ncat '{tmp_path / 'err'}' >&2\nexit {code}\n"
+    )
+    script.chmod(0o755)
+    jar = tmp_path / "converter.jar"
+    jar.write_bytes(b"")
+    return str(script), jar
+
+
+def test_databricks_defaults_to_python_without_a_jar(databricks_client):
+    from ossie_connect._converters import DatabricksConverter
+
+    connection = Databricks(catalog="c", schema="s", client=databricks_client)
+    assert isinstance(connection._converter, DatabricksConverter)
+    assert any("deprecated Python converter" in f.message for f in connection.check())
+
+
+def test_databricks_defaults_to_java_when_a_jar_is_named(monkeypatch, tmp_path,
+                                                          databricks_client):
+    from ossie_connect._java import JavaDatabricksConverter
+
+    jar = tmp_path / "converter.jar"
+    jar.write_bytes(b"")
+    monkeypatch.setenv("OSSIE_DATABRICKS_JAR", str(jar))
+    connection = Databricks(catalog="c", schema="s", client=databricks_client)
+    assert isinstance(connection._converter, JavaDatabricksConverter)
+    assert connection._converter.jar == jar
+    assert not any("deprecated" in f.message for f in connection.check())
+
+
+def test_databricks_finds_the_jar_built_for_this_pin(monkeypatch, databricks_client):
+    from ossie_connect._java import JavaDatabricksConverter, built_jar_path
+
+    built_jar_path().parent.mkdir(parents=True)
+    built_jar_path().write_bytes(b"")
+    connection = Databricks(catalog="c", schema="s", client=databricks_client)
+    assert isinstance(connection._converter, JavaDatabricksConverter)
+
+
+def test_java_converter_is_pinned_with_the_python_ones():
+    """The jar is built at the rev pyproject.toml pins the other converters to."""
+    from pathlib import Path
+
+    from ossie_connect._java import CONVERTERS_REV
+
+    pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text()
+    assert f"apache/ossie-converters@{CONVERTERS_REV}" in pyproject
+
+
+@needs_sh
+def test_java_refusal_is_a_conversion_error(tmp_path):
+    from ossie_connect import ConversionError
+    from ossie_connect._java import JavaDatabricksConverter
+
+    java, jar = _fake_java(tmp_path, code=1,
+                           stderr="Conversion failed: dimension 'x' collides\n")
+    with pytest.raises(ConversionError, match=r"^Databricks: dimension 'x' collides$"):
+        JavaDatabricksConverter(jar, java=java).to_platform("version: x\n")
+
+
+@needs_sh
+def test_java_notices_are_warnings_only_when_asked(tmp_path):
+    from ossie_connect._java import JavaDatabricksConverter
+
+    java, jar = _fake_java(tmp_path, stdout="version: '1.1'\n", stderr=(
+        "Conversion notices (1):\n"
+        "  [field 'order_date'] datatype has no Metric View counterpart; dropped\n"
+    ))
+    converter = JavaDatabricksConverter(jar, java=java)
+    with warnings.catch_warnings(record=True) as quiet:
+        warnings.simplefilter("always")
+        assert converter.to_platform("m") == "version: '1.1'\n"
+    assert not quiet
+    with pytest.warns(UserWarning, match=r"^\[field 'order_date'\] datatype"):
+        converter.to_platform("m", warn=True)
+
+
+def test_java_missing_says_what_is_needed(tmp_path):
+    from ossie_connect import ConversionError
+    from ossie_connect._java import JavaDatabricksConverter
+
+    jar = tmp_path / "converter.jar"
+    jar.write_bytes(b"")
+    converter = JavaDatabricksConverter(jar, java=str(tmp_path / "no-java"))
+    with pytest.raises(ConversionError, match="needs Java 21"):
+        converter.to_platform("m")
+
+
+def test_java_without_a_jar_says_how_to_build_one():
+    from ossie_connect._java import JavaDatabricksConverter
+
+    with pytest.raises(FileNotFoundError, match="build-databricks-converter"):
+        JavaDatabricksConverter()
+
+
+def test_java_writes_the_same_metric_view_as_python(databricks, databricks_java):
+    assert (yaml.safe_load(databricks_java.to_metric_view(MODEL))
+            == yaml.safe_load(databricks.to_metric_view(MODEL)))
+
+
+def test_java_still_needs_the_join_keys_deduplicated(databricks_java):
+    from ossie_connect import ConversionError
+
+    with pytest.raises(ConversionError, match="collides"):
+        databricks_java.to_metric_view(MODEL, dedupe_join_keys=False)
+
+
+def test_java_download_labels_expressions_with_the_portable_dialect(databricks_java):
+    """So a model read from Databricks carries over to Fabric and Snowflake."""
+    databricks_java.upload(MODEL)
+    model = yaml.safe_load(databricks_java.download("sales_demo"))
+    assert model["name"] == "sales_demo"
+    dialects = {d["dialect"] for m in model["metrics"] for d in m["expression"]["dialects"]}
+    assert dialects == {"OSSIE_SQL_2026"}
 
 
 # --- a folder of models ----------------------------------------------------------
@@ -754,7 +989,7 @@ def test_snowflake_at_shares_the_connection(snowflake, snowflake_connection):
     assert other._connection is snowflake_connection
 
 
-@pytest.mark.parametrize("name", ["fabric", "databricks", "snowflake"])
+@pytest.mark.parametrize("name", ["fabric", "databricks", "databricks_java", "snowflake"])
 def test_at_without_arguments_changes_nothing(name, request):
     connection = request.getfixturevalue(name)
     assert repr(connection.at()) == repr(connection)
@@ -1002,7 +1237,7 @@ def test_snowflake_delete_drops_the_semantic_view(snowflake, snowflake_connectio
     )
 
 
-@pytest.mark.parametrize("name", ["fabric", "databricks", "snowflake"])
+@pytest.mark.parametrize("name", ["fabric", "databricks", "databricks_java", "snowflake"])
 def test_upload_then_delete_leaves_nothing_behind(name, request):
     """A script that creates things in someone else's tenant must be able to unmake them."""
     connection = request.getfixturevalue(name)

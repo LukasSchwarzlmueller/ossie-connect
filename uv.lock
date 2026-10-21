@@ -17,7 +17,7 @@ dependencies = [
 [[package]]
 name = "apache-ossie-microsoft"
 version = "0.2.0.dev0"
-source = { git = "https://github.com/apache/ossie?subdirectory=converters%2Fmicrosoft&rev=a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c#a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
+source = { git = "https://github.com/apache/ossie-converters?subdirectory=microsoft&rev=853c52986cd03508fe233fbab8c4213890943095#853c52986cd03508fe233fbab8c4213890943095" }
 dependencies = [
     { name = "pyyaml" },
     { name = "sqlglot" },
@@ -26,9 +26,10 @@ dependencies = [
 [[package]]
 name = "apache-ossie-snowflake"
 version = "0.2.0.dev0"
-source = { git = "https://github.com/apache/ossie?subdirectory=converters%2Fsnowflake&rev=a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c#a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" }
+source = { git = "https://github.com/apache/ossie-converters?subdirectory=snowflake&rev=853c52986cd03508fe233fbab8c4213890943095#853c52986cd03508fe233fbab8c4213890943095" }
 dependencies = [
     { name = "pyyaml" },
+    { name = "sqlglot" },
 ]
 
 [[package]]
@@ -489,8 +490,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "apache-ossie-databricks", git = "https://github.com/apache/ossie?subdirectory=converters%2Fdatabricks&rev=a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" },
-    { name = "apache-ossie-microsoft", git = "https://github.com/apache/ossie?subdirectory=converters%2Fmicrosoft&rev=a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" },
-    { name = "apache-ossie-snowflake", marker = "extra == 'snowflake'", git = "https://github.com/apache/ossie?subdirectory=converters%2Fsnowflake&rev=a5bdbbcd981c3dfb93f99ba8221602e1c3108f8c" },
+    { name = "apache-ossie-microsoft", git = "https://github.com/apache/ossie-converters?subdirectory=microsoft&rev=853c52986cd03508fe233fbab8c4213890943095" },
+    { name = "apache-ossie-snowflake", marker = "extra == 'snowflake'", git = "https://github.com/apache/ossie-converters?subdirectory=snowflake&rev=853c52986cd03508fe233fbab8c4213890943095" },
     { name = "databricks-sdk", specifier = ">=0.133.0" },
     { name = "pyyaml" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=4.7.2" },

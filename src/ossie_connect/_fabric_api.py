@@ -54,27 +54,59 @@ class FabricError(RuntimeError):
     """A Fabric REST call failed, or no credential was available."""
 
 
+_AZ_ARGS = ["account", "get-access-token", "--resource", FABRIC_SCOPE,
+            "--query", "accessToken", "-o", "tsv"]
+_WINDOWS_AZ = r"C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd"
+
+
+def _az_commands():
+    """The Azure CLIs to ask for a token, in order, as (label, argv) pairs.
+
+    The Linux `az` comes first. On WSL the Windows one is tried after it, through
+    powershell.exe: a tenant with a device-compliance policy refuses the Linux login
+    (AADSTS530033) because only the Windows host counts as a managed device. `cd C:\\`
+    stops PowerShell warning about a UNC working directory when started from WSL.
+    """
+    commands = []
+    if shutil.which("az"):
+        commands.append(("az", ["az", *_AZ_ARGS]))
+    if shutil.which("powershell.exe"):
+        script = (
+            "cd C:\\; "
+            "$az = (Get-Command az.cmd -ErrorAction SilentlyContinue).Source; "
+            f"if (-not $az) {{ $az = '{_WINDOWS_AZ}' }}; "
+            f"& $az {' '.join(_AZ_ARGS)}"
+        )
+        commands.append(("Windows az", ["powershell.exe", "-NoProfile", "-Command", script]))
+    return commands
+
+
 def acquire_token() -> str:
-    """A bearer token for the Fabric API, from FABRIC_TOKEN or the Azure CLI."""
+    """A bearer token for the Fabric API, from FABRIC_TOKEN or the Azure CLI.
+
+    Tries each Azure CLI from `_az_commands` and returns the first token. If none gives
+    one, the error names every CLI tried and its last line of output.
+    """
     token = os.environ.get("FABRIC_TOKEN")
     if token:
         return token.strip()
 
-    if shutil.which("az") is None:
-        raise FabricError(
-            "no credential - run `az login`, or set FABRIC_TOKEN"
-        )
-    try:
-        result = subprocess.run(
-            ["az", "account", "get-access-token", "--resource", FABRIC_SCOPE,
-             "--query", "accessToken", "-o", "tsv"],
-            capture_output=True, text=True, check=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise FabricError(
-            f"`az login` needed - {exc.stderr.strip().splitlines()[-1] if exc.stderr.strip() else 'az returned no token'}"
-        ) from exc
-    return result.stdout.strip()
+    commands = _az_commands()
+    if not commands:
+        raise FabricError("no credential - run `az login`, or set FABRIC_TOKEN")
+
+    failures = []
+    for label, argv in commands:
+        result = subprocess.run(argv, capture_output=True, text=True)
+        token = result.stdout.strip()
+        if result.returncode == 0 and token.startswith("ey"):
+            return token
+        lines = result.stderr.strip().splitlines()
+        failures.append(f"{label}: {lines[-1] if lines else 'returned no token'}")
+    raise FabricError(
+        "`az login` needed (on WSL, if the tenant requires a managed device, log in "
+        "from Windows PowerShell) - " + "; ".join(failures)
+    )
 
 
 def token_expiry(token):
@@ -144,13 +176,15 @@ def _find_item(workspace, name, token):
     return None
 
 
-def _create_item(workspace, name, bim, token):
-    """Create a semantic model from a TMSL document. Returns its id."""
+def _create_item(workspace, name, bim, token, folder=None):
+    """Create a semantic model from a TMSL document, in `folder` if given. Returns its id."""
     payload = {
         "displayName": name,
         "type": "SemanticModel",
         "definition": {"format": "TMSL", "parts": _parts(bim)},
     }
+    if folder:
+        payload["folderId"] = folder
     status, body, headers = request(
         "POST", f"{FABRIC_API}/workspaces/{workspace}/items", token, payload
     )
@@ -227,8 +261,8 @@ class FabricApi:
     def find_item(self, workspace, name, token):
         return _find_item(workspace, name, token)
 
-    def create_item(self, workspace, name, bim, token):
-        return _create_item(workspace, name, bim, token)
+    def create_item(self, workspace, name, bim, token, folder=None):
+        return _create_item(workspace, name, bim, token, folder)
 
     def update_item(self, workspace, item, bim, token):
         return _update_item(workspace, item, bim, token)

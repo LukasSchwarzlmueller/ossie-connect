@@ -1,11 +1,10 @@
 """Conversion between Ossie and each platform's own format.
 
 Conversion is kept behind these small classes rather than called inline so that the
-implementation can be replaced without touching the connections. That is not
-hypothetical for Databricks: upstream now maintains the converter in Java and describes
-the Python one this package uses as "the original reference implementation, to be
-deprecated". When that lands, a Java-backed class implementing the same two methods
-drops in via `Databricks(converter=...)`.
+implementation can be replaced without touching the connections. For Databricks that
+has happened: upstream maintains the converter in Java and removed the Python one, so
+`default_databricks_converter` picks the Java one (`_java.JavaDatabricksConverter`)
+whenever its jar can be found, and falls back to the Python one otherwise.
 """
 
 from contextlib import contextmanager
@@ -50,7 +49,11 @@ class FabricConverter:
 
 
 class DatabricksConverter:
-    """Ossie <-> Metric View YAML, via the apache-ossie-databricks Python converter."""
+    """Ossie <-> Metric View YAML, via the apache-ossie-databricks Python converter.
+
+    The fallback for machines without the Java converter. Upstream removed it, so it is
+    pinned to an older apache/ossie commit and will not receive fixes.
+    """
 
     def to_platform(self, ossie_yaml: str, *, warn: bool = False) -> str:
         from ossie_databricks.ossie_to_metric_view import convert_ossie_to_metric_view
@@ -68,6 +71,14 @@ class DatabricksConverter:
             return convert_metric_view_to_ossie(metric_view, model_name=name)
 
 
+def default_databricks_converter():
+    """The Java converter when its jar can be found, else the deprecated Python one."""
+    from ._java import JavaDatabricksConverter, find_jar
+
+    jar = find_jar()
+    return JavaDatabricksConverter(jar) if jar else DatabricksConverter()
+
+
 class SnowflakeConverter:
     """Ossie -> Snowflake Semantic View YAML, via apache-ossie-snowflake.
 
@@ -76,7 +87,7 @@ class SnowflakeConverter:
     """
 
     def to_platform(self, ossie_yaml: str, *, warn: bool = False) -> str:
-        from ossie_snowflake.converter import convert_ossie_to_snowflake
+        from ossie_snowflake.ossie_to_snowflake import convert_ossie_to_snowflake
 
         with _as_conversion_error("Snowflake"), converting(warn):
             return convert_ossie_to_snowflake(ossie_yaml)

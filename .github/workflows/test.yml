@@ -8,8 +8,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      # The Databricks tests run on both converters; the Java one needs JDK 21 and a jar.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
       - run: uv sync --extra snowflake
-      - run: uv run pytest -q
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ossie-connect
+          key: databricks-converter-${{ hashFiles('src/ossie_connect/_java.py') }}
+      - run: uv run ossie-connect build-databricks-converter
+      - run: uv run pytest -q -rs
       # The wheel must install without [tool.uv.sources], which does not travel with it.
       - run: uv build
       - run: uv venv --clear /tmp/consumer && uv pip install --python /tmp/consumer/bin/python dist/*.whl
