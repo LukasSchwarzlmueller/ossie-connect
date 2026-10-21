@@ -1,17 +1,22 @@
-"""Command line wrapper around the Fabric and Databricks connections.
+"""Deploy Ossie semantic models to Fabric, Databricks and Snowflake.
 
-    ossie-connect check    fabric
-    ossie-connect list     fabric
-    ossie-connect upload   fabric     model.yaml
-    ossie-connect delete   fabric     sales_demo
-    ossie-connect download fabric     sales_demo -o model.yaml
-    ossie-connect upload   databricks model.yaml
-    ossie-connect download databricks sales_demo -o model.yaml
+<platform> is fabric, databricks or snowflake; the commands are the same for each.
+
+    ossie-connect check    <platform>                       settings right? writes nothing
+    ossie-connect list     <platform>                       what is deployed
+    ossie-connect upload   <platform> model.yaml            or a folder of models
+    ossie-connect upload   <platform> models/ --only-changed
+    ossie-connect diff     <platform> models/ --show        new / changed / same
+    ossie-connect download <platform> sales_demo -o model.yaml
+    ossie-connect delete   <platform> sales_demo
+    ossie-connect prune    <platform> models/               --yes to actually delete
     ossie-connect build-databricks-converter
 
-Connection settings come from the environment (and a .env file beside you, if there is
-one); every one of them can be overridden with a flag. --dry-run prints what would be
-sent and connects to nothing.
+Snowflake cannot be read back: no download, diff or --only-changed there.
+
+Settings come from the environment and a .env file in the current folder; every one
+can be overridden with a flag. --dry-run prints what would be sent and connects to
+nothing. --warnings shows what a conversion could not carry across.
 """
 
 import argparse
