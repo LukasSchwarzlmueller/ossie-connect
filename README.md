@@ -223,6 +223,9 @@ a flag that overrides it. Add `--warnings` to see what a conversion could not ca
 
 ## Configuration
 
+Copy [`.env.example`](.env.example) to `.env` in the folder you run from, and fill in the
+platforms you use.
+
 | Variable | Used by | Notes |
 |---|---|---|
 | `FABRIC_WORKSPACE_ID` | Fabric | workspace to work in |

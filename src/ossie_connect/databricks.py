@@ -158,6 +158,11 @@ class Databricks:
         if name not in self.list_models():
             return compare(name, local, None)
         remote = yaml.safe_load(self._read_definition(f"{self.catalog}.{self.schema}.{name}"))
+        # Databricks stores `version: 1.1` unquoted, so it reads back as a number while
+        # the converter writes the string "1.1". Seen against a real workspace.
+        for document in (local, remote):
+            if isinstance(document, dict) and "version" in document:
+                document["version"] = str(document["version"])
         return compare(name, local, remote)
 
     def list_models(self) -> list[str]:

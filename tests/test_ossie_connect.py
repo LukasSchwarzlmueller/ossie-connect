@@ -660,6 +660,17 @@ def test_compare_says_new_then_same_then_changed(name, request):
     assert "Revenue" in result.diff and result.name == "sales_demo"
 
 
+def test_databricks_compare_ignores_the_version_stored_as_a_number(databricks,
+                                                                    databricks_client):
+    """Databricks stores `version: 1.1` unquoted; reading it back gives a float."""
+    databricks.upload(MODEL)
+    name = "main.sales.sales_demo"
+    stored = databricks_client.views[name]
+    databricks_client.views[name] = stored.replace("version: '1.1'", "version: 1.1")
+    assert "version: 1.1\n" in databricks_client.views[name]
+    assert databricks.compare(MODEL).status == "same"
+
+
 def test_cli_diff_exits_non_zero_when_something_would_change(monkeypatch, capsys,
                                                                fabric_api):
     from ossie_connect import cli
